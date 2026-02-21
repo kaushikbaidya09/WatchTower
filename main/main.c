@@ -1,7 +1,9 @@
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_task_wdt.h"
 #include "app_log.h"
+#include "wifi.h"
 
 void generate_data_task(void *pvParameter)
 {
@@ -20,6 +22,8 @@ void app_main()
 
     xTaskCreate(&generate_data_task, "generate_data_task", 2048, NULL, 5, NULL);
     APPLOG_I("Generate data task created!.");
+
+    wifi_app_main();
 
     int count = 0;
     while (1)

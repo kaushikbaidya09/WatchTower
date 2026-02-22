@@ -11,6 +11,7 @@
 #include "esp_system.h"
 #include "app_log.h"
 #include "wifi.h"
+#include "led.h"
 
 static void obtain_time(void)
 {
@@ -92,7 +93,7 @@ void app_main(void)
         "TaskCore0", /* Name of the task */
         4096,        /* Stack size in words */
         NULL,        /* Task input parameter */
-        1,           /* Priority of the task */
+        4,           /* Priority of the task */
         NULL,        /* Task handle */
         0);          /* Core where the task should run (0 or 1) */
 
@@ -102,13 +103,16 @@ void app_main(void)
         "TaskCore1", /* Name of the task */
         4096,        /* Stack size in words */
         NULL,        /* Task input parameter */
-        1,           /* Priority of the task */
+        5,           /* Priority of the task */
         NULL,        /* Task handle */
         1);          /* Core where the task should run (0 or 1) */
+
+    xTaskCreate(&led_task_main, "led_task", 8192, NULL, 5, NULL);
+    APPLOG_I("LED task created!.");
 
     vTaskDelay(pdMS_TO_TICKS(10000));
     obtain_time();
 
-    xTaskCreate(&generate_data_task, "generate_data_task", 2048, NULL, 5, NULL);
+    xTaskCreate(&generate_data_task, "generate_data_task", 4096, NULL, 5, NULL);
     APPLOG_I("Generate data task created!.");
 }

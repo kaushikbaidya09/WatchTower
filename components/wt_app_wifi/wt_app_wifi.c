@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "esp_netif_net_stack.h"
 #include "esp_netif.h"
+#include "esp_sntp.h"
 #include "nvs_flash.h"
 #include "lwip/inet.h"
 #include "lwip/netdb.h"
@@ -21,8 +22,29 @@
 #include "wt_app_wifi.h"
 #include "wt_app_log.h"
 
-#define WIFI_MAX_RETRY_PER_SSID 1
-#define WIFI_RETRY_WAIT_TIME_MS 10000 // milliseconds
+#ifndef ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD
+#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA2_PSK
+#endif
+
+/* STA Configuration */
+#define WT_WIFI_STA_SSID "Kaushik's GT 2 Pro" //< Default wifi sta ssid
+#define WT_WIFI_STA_PASSWD "24681355"         //< Default wifi sta ssid password
+#define WT_WIFI_STA_RETRY 3                   //< Maximum retry on wifi station mode
+#define WT_WIFI_STA_RETRY_WAIT_MS 10000       //< Retry wait period in milliseconds
+
+/* AP Configuration */
+#define WT_WIFI_AP_SSID "MyNetwork_KB"  //< Default wifi ap ssid
+#define WT_WIFI_AP_PASSWD "password123" //< Default wifi ap ssid password
+#define WT_WIFI_AP_CHANNEL 6            //< Wifi AP channel
+#define WT_WIFI_AP_MAX_CONN 4           //< Maximum device limit
+
+/* WIFI Events */
+#define WT_WIFI_EVENT_CONNECT (BIT0)
+#define WT_WIFI_EVENT_FAIL (BIT1)
+#define WT_WIFI_EVENT_ALL (WT_WIFI_EVENT_CONNECT | WT_WIFI_EVENT_FAIL)
+
+/* DHCP server option*/
+#define WT_WIFI_DHCPS_OFFER_DNS 0x02
 
 typedef struct
 {
@@ -57,49 +79,41 @@ static void next_wifi_creds(void)
     wc_index = (wc_index + 1) % (sizeof(wifi_creds) / sizeof(wifi_creds[0]));
 }
 
-/* STA Configuration */
-// #define EXAMPLE_ESP_WIFI_STA_SSID "Kaushik's GT 2 Pro"
-// #define EXAMPLE_ESP_WIFI_STA_PASSWD "24681355"
-#define EXAMPLE_ESP_WIFI_STA_SSID "Hari 5th floor"
-#define EXAMPLE_ESP_WIFI_STA_PASSWD "7259466152"
-#define EXAMPLE_ESP_MAXIMUM_RETRY 3
+static void obtain_time(void)
+{
+    // Configure before init
+    // esp_sntp_stop();
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
 
-#if CONFIG_ESP_WIFI_AUTH_OPEN
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_OPEN
-#elif CONFIG_ESP_WIFI_AUTH_WEP
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WEP
-#elif CONFIG_ESP_WIFI_AUTH_WPA_PSK
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA_PSK
-#elif CONFIG_ESP_WIFI_AUTH_WPA2_PSK
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA2_PSK
-#elif CONFIG_ESP_WIFI_AUTH_WPA_WPA2_PSK
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA_WPA2_PSK
-#elif CONFIG_ESP_WIFI_AUTH_WPA3_PSK
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA3_PSK
-#elif CONFIG_ESP_WIFI_AUTH_WPA2_WPA3_PSK
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA2_WPA3_PSK
-#elif CONFIG_ESP_WIFI_AUTH_WAPI_PSK
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WAPI_PSK
-#endif
-#define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA2_PSK
+    // Wait until time is set
+    time_t now = 0;
+    struct tm timeinfo = {0};
 
-/* AP Configuration */
-#define EXAMPLE_ESP_WIFI_AP_SSID "MyNetwork_KB"
-#define EXAMPLE_ESP_WIFI_AP_PASSWD "password123"
-#define EXAMPLE_ESP_WIFI_CHANNEL 6
-#define EXAMPLE_MAX_STA_CONN 4
+    int retry = 0;
+    const int retry_count = 10;
+    while (timeinfo.tm_year < (2016 - 1900) && ++retry < retry_count)
+    {
+        APPLOG_I("Getting time.....!");
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        time(&now);
+        localtime_r(&now, &timeinfo);
+    }
 
-/* The event group allows multiple bits for each event, but we only care about two events:
- * - we are connected to the AP with an IP
- * - we failed to connect after the maximum amount of retries */
-#define WIFI_CONNECTED_BIT BIT0
-#define WIFI_FAIL_BIT BIT1
+    // Configure IST (UTC+5:30)
+    setenv("TZ", "IST-5:30", 1);
+    tzset();
 
-/*DHCP server option*/
-#define DHCPS_OFFER_DNS 0x02
-
-// static const char *TAG_AP = "WiFi SoftAP";
-// static const char *TAG_STA = "WiFi Sta";
+    if (retry == retry_count)
+    {
+        APPLOG_I("Failed to get time from NTP server");
+    }
+    else
+    {
+        APPLOG_I("Time synchronized: %s", asctime(&timeinfo));
+    }
+}
 
 /* FreeRTOS event group to signal when we are connected/disconnected */
 static EventGroupHandle_t s_wifi_event_group;
@@ -134,12 +148,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         //     xEventGroupSetBits(s_wifi_event_group, WEVT_CONNECTION_FAILED);
         // }
     }
-    else if (event_base == WIFI_EVENT && event_id == IP_EVENT_STA_GOT_IP)
+    else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
     {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         APPLOG_I("Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_num = 0;
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        xEventGroupSetBits(s_wifi_event_group, WT_WIFI_EVENT_CONNECT);
     }
 }
 
@@ -150,11 +164,11 @@ esp_netif_t *wifi_init_softap(void)
 
     wifi_config_t wifi_ap_config = {
         .ap = {
-            .ssid = EXAMPLE_ESP_WIFI_AP_SSID,
-            .ssid_len = strlen(EXAMPLE_ESP_WIFI_AP_SSID),
-            .channel = EXAMPLE_ESP_WIFI_CHANNEL,
-            .password = EXAMPLE_ESP_WIFI_AP_PASSWD,
-            .max_connection = EXAMPLE_MAX_STA_CONN,
+            .ssid = WT_WIFI_AP_SSID,
+            .ssid_len = strlen(WT_WIFI_AP_SSID),
+            .channel = WT_WIFI_AP_CHANNEL,
+            .password = WT_WIFI_AP_PASSWD,
+            .max_connection = WT_WIFI_AP_MAX_CONN,
             .authmode = WIFI_AUTH_WPA2_PSK,
             .pmf_cfg = {
                 .required = false,
@@ -162,15 +176,14 @@ esp_netif_t *wifi_init_softap(void)
         },
     };
 
-    if (strlen(EXAMPLE_ESP_WIFI_AP_PASSWD) == 0)
+    if (strlen(WT_WIFI_AP_PASSWD) == 0)
     {
         wifi_ap_config.ap.authmode = WIFI_AUTH_OPEN;
     }
 
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_ap_config));
 
-    APPLOG_I("wifi_init_softap finished. SSID:%s password:%s channel:%d",
-             EXAMPLE_ESP_WIFI_AP_SSID, EXAMPLE_ESP_WIFI_AP_PASSWD, EXAMPLE_ESP_WIFI_CHANNEL);
+    APPLOG_I("wifi_init_softap finished. SSID:%s password:%s channel:%d", WT_WIFI_AP_SSID, WT_WIFI_AP_PASSWD, WT_WIFI_AP_CHANNEL);
 
     return esp_netif_ap;
 }
@@ -182,15 +195,10 @@ esp_netif_t *wifi_init_sta(void)
 
     wifi_config_t wifi_sta_config = {
         .sta = {
-            .ssid = EXAMPLE_ESP_WIFI_STA_SSID,
-            .password = EXAMPLE_ESP_WIFI_STA_PASSWD,
+            .ssid = WT_WIFI_STA_SSID,
+            .password = WT_WIFI_STA_PASSWD,
             .scan_method = WIFI_ALL_CHANNEL_SCAN,
-            .failure_retry_cnt = EXAMPLE_ESP_MAXIMUM_RETRY,
-            /* Authmode threshold resets to WPA2 as default if password matches WPA2 standards (password len => 8).
-             * If you want to connect the device to deprecated WEP/WPA networks, Please set the threshold value
-             * to WIFI_AUTH_WEP/WIFI_AUTH_WPA_PSK and set the password with length and format matching to
-             * WIFI_AUTH_WEP/WIFI_AUTH_WPA_PSK standards.
-             */
+            .failure_retry_cnt = WT_WIFI_STA_RETRY,
             .threshold.authmode = ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD,
             .sae_pwe_h2e = WPA3_SAE_PWE_BOTH,
         },
@@ -207,7 +215,7 @@ void softap_set_dns_addr(esp_netif_t *esp_netif_ap, esp_netif_t *esp_netif_sta)
 {
     esp_netif_dns_info_t dns;
     esp_netif_get_dns_info(esp_netif_sta, ESP_NETIF_DNS_MAIN, &dns);
-    uint8_t dhcps_offer_option = DHCPS_OFFER_DNS;
+    uint8_t dhcps_offer_option = WT_WIFI_DHCPS_OFFER_DNS;
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_netif_dhcps_stop(esp_netif_ap));
     ESP_ERROR_CHECK(esp_netif_dhcps_option(esp_netif_ap, ESP_NETIF_OP_SET, ESP_NETIF_DOMAIN_NAME_SERVER, &dhcps_offer_option, sizeof(dhcps_offer_option)));
     ESP_ERROR_CHECK(esp_netif_set_dns_info(esp_netif_ap, ESP_NETIF_DNS_MAIN, &dns));
@@ -233,7 +241,7 @@ void wt_task_wifi(void *pvParameters)
 
     /* Register Event handler */
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
-    // ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
 
     /*Initialize WiFi */
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -254,25 +262,20 @@ void wt_task_wifi(void *pvParameters)
 
     while (1)
     {
-
-        EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-                                               WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                               pdFALSE,
-                                               pdFALSE,
-                                               portMAX_DELAY);
+        EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WT_WIFI_EVENT_ALL, pdTRUE, pdFALSE, portMAX_DELAY);
 
         /* xEventGroupWaitBits() returns the bits before the call returned,
          * hence we can test which event actually happened. */
-        if (bits & WIFI_CONNECTED_BIT)
+        if (bits & WT_WIFI_EVENT_CONNECT)
         {
-            APPLOG_I("connected to ap SSID:%s password:%s",
-                     EXAMPLE_ESP_WIFI_STA_SSID, EXAMPLE_ESP_WIFI_STA_PASSWD);
+            APPLOG_I("connected to ap SSID:%s password:%s", WT_WIFI_STA_SSID, WT_WIFI_STA_PASSWD);
             softap_set_dns_addr(esp_netif_ap, esp_netif_sta);
+
+            obtain_time();
         }
-        else if (bits & WIFI_FAIL_BIT)
+        else if (bits & WT_WIFI_EVENT_FAIL)
         {
-            APPLOG_I("Failed to connect to SSID:%s, password:%s",
-                     EXAMPLE_ESP_WIFI_STA_SSID, EXAMPLE_ESP_WIFI_STA_PASSWD);
+            APPLOG_I("Failed to connect to SSID:%s, password:%s", WT_WIFI_STA_SSID, WT_WIFI_STA_PASSWD);
         }
         else
         {
@@ -290,4 +293,3 @@ void wt_task_wifi(void *pvParameters)
         APPLOG_I("NAPT not enabled on the netif: %p", esp_netif_ap);
     }
 }
-

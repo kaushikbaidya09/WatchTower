@@ -1,5 +1,5 @@
 #include <stdio.h>
-#include "led.h"
+#include "wt_app_led.h"
 #include <string.h>
 #include <math.h>
 #include "freertos/FreeRTOS.h"
@@ -79,7 +79,7 @@ static size_t encoder_callback(const void *data, size_t data_size,
     }
 }
 
-void led_app_main(void *pvParameter)
+void wt_task_led(void *pvParameter)
 {
     ESP_LOGI(TAG, "Create RMT TX channel");
     rmt_channel_handle_t led_chan = NULL;

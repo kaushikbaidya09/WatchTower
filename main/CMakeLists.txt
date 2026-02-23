@@ -4,7 +4,7 @@ idf_component_register(
     INCLUDE_DIRS 
         "."
     REQUIRES
-        app_log
-        wifi
-        led
+        wt_app_log
+        wt_app_wifi
+        wt_app_led
 )

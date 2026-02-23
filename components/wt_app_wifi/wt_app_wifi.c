@@ -18,8 +18,8 @@
 #endif
 #include "lwip/err.h"
 #include "lwip/sys.h"
-#include "wifi.h"
-#include "app_log.h"
+#include "wt_app_wifi.h"
+#include "wt_app_log.h"
 
 #define WIFI_MAX_RETRY_PER_SSID 1
 #define WIFI_RETRY_WAIT_TIME_MS 10000 // milliseconds
@@ -214,7 +214,7 @@ void softap_set_dns_addr(esp_netif_t *esp_netif_ap, esp_netif_t *esp_netif_sta)
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_netif_dhcps_start(esp_netif_ap));
 }
 
-void wifi_app_main(void *pvParameters)
+void wt_task_wifi(void *pvParameters)
 {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -290,3 +290,4 @@ void wifi_app_main(void *pvParameters)
         APPLOG_I("NAPT not enabled on the netif: %p", esp_netif_ap);
     }
 }
+

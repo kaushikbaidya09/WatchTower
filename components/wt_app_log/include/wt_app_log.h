@@ -1,5 +1,5 @@
-#ifndef APP_LOG_H
-#define APP_LOG_H
+#ifndef WT_APP_LOG_H
+#define WT_APP_LOG_H
 
 #include <stdio.h>
 #include <time.h>
@@ -29,4 +29,4 @@
 #define APPLOG_D(format, ...) APPLOG("DEBUG", format, ##__VA_ARGS__)
 #define APPLOG_V(format, ...) APPLOG("VERBOSE", format, ##__VA_ARGS__)
 
-#endif // APP_LOG_H
+#endif // WT_APP_LOG_H

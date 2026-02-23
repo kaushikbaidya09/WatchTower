@@ -1,6 +1,6 @@
 idf_component_register(
     SRCS 
-        "led.c" 
+        "wt_app_led.c"
     INCLUDE_DIRS 
         "include"
     PRIV_REQUIRES 

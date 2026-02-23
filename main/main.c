@@ -9,9 +9,9 @@
 #include "esp_task_wdt.h"
 #include "esp_sntp.h"
 #include "esp_system.h"
-#include "app_log.h"
-#include "wifi.h"
-#include "led.h"
+#include "wt_app_log.h"
+#include "wt_app_wifi.h"
+#include "wt_app_led.h"
 
 static void obtain_time(void)
 {
@@ -49,11 +49,11 @@ static void obtain_time(void)
     }
 }
 
-void wt_app_main(void *pvParameters)
+void wt_task_main(void *pvParameters)
 {
     while (1)
     {
-        APPLOG_I("wt_app_main task running. Core ID: %d", xPortGetCoreID());
+        APPLOG_I("wt_task_main running. Core ID: %d", xPortGetCoreID());
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
@@ -63,9 +63,9 @@ void app_main(void)
 {
     esp_log_level_set("*", ESP_LOG_INFO); // set all components Log level
 
-    xTaskCreatePinnedToCore(wifi_app_main, "WIFI_APP_MAIN", 4096, NULL, 4, NULL, 0);
-    xTaskCreatePinnedToCore(wt_app_main, "WT_APP_MAIN", 4096, NULL, 5, NULL, 1);
-    xTaskCreatePinnedToCore(led_app_main, "LED_APP_MAIN", 8192, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(wt_task_main, "WT_TASK_MAIN", 4096, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(wt_task_wifi, "WT_TASK_WIFI", 4096, NULL, 4, NULL, 0);
+    xTaskCreatePinnedToCore(wt_task_led, "WT_TASK_LED", 8192, NULL, 5, NULL, 1);
 
     // vTaskDelay(pdMS_TO_TICKS(10000));
     // obtain_time();

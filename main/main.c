@@ -49,34 +49,11 @@ static void obtain_time(void)
     }
 }
 
-void generate_data_task(void *pvParameter)
-{
-    int count = 0;
-    while (1)
-    {
-        APPLOG_I("generate_data_task! count: %d", count++);
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-}
-
-// Task function for Core 0
-void task_core_0(void *pvParameters)
-{
-    wifi_app_main();
-
-    while (1)
-    {
-        // APPLOG_I("Task running on Core 0. Core ID: %d", xPortGetCoreID());
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-}
-
-// Task function for Core 1
-void task_core_1(void *pvParameters)
+void wt_app_main(void *pvParameters)
 {
     while (1)
     {
-        // APPLOG_I("Task running on Core 1. Core ID: %d", xPortGetCoreID());
+        APPLOG_I("wt_app_main task running. Core ID: %d", xPortGetCoreID());
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
@@ -84,35 +61,17 @@ void task_core_1(void *pvParameters)
 // Main application entry point
 void app_main(void)
 {
-    // LOG SETUP
     esp_log_level_set("*", ESP_LOG_INFO); // set all components Log level
 
-    // Create Task 1 and pin it to Core 0
-    xTaskCreatePinnedToCore(
-        task_core_0, /* Function to implement the task */
-        "TaskCore0", /* Name of the task */
-        4096,        /* Stack size in words */
-        NULL,        /* Task input parameter */
-        4,           /* Priority of the task */
-        NULL,        /* Task handle */
-        0);          /* Core where the task should run (0 or 1) */
+    xTaskCreatePinnedToCore(wifi_app_main, "WIFI_APP_MAIN", 4096, NULL, 4, NULL, 0);
+    xTaskCreatePinnedToCore(wt_app_main, "WT_APP_MAIN", 4096, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(led_app_main, "LED_APP_MAIN", 8192, NULL, 5, NULL, 1);
 
-    // Create Task 2 and pin it to Core 1
-    xTaskCreatePinnedToCore(
-        task_core_1, /* Function to implement the task */
-        "TaskCore1", /* Name of the task */
-        4096,        /* Stack size in words */
-        NULL,        /* Task input parameter */
-        5,           /* Priority of the task */
-        NULL,        /* Task handle */
-        1);          /* Core where the task should run (0 or 1) */
+    // vTaskDelay(pdMS_TO_TICKS(10000));
+    // obtain_time();
 
-    xTaskCreate(&led_task_main, "led_task", 8192, NULL, 5, NULL);
-    APPLOG_I("LED task created!.");
-
-    vTaskDelay(pdMS_TO_TICKS(10000));
-    obtain_time();
-
-    xTaskCreate(&generate_data_task, "generate_data_task", 4096, NULL, 5, NULL);
-    APPLOG_I("Generate data task created!.");
+    while (1)
+    {
+        vTaskDelay(pdMS_TO_TICKS(10000));
+    }
 }

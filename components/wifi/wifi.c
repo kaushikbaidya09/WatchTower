@@ -21,11 +21,41 @@
 #include "wifi.h"
 #include "app_log.h"
 
-/* The examples use WiFi configuration that you can set via project configuration menu.
+#define WIFI_MAX_RETRY_PER_SSID 1
+#define WIFI_RETRY_WAIT_TIME_MS 10000 // milliseconds
 
-   If you'd rather not, just change the below entries to strings with
-   the config you want - ie #define EXAMPLE_ESP_WIFI_STA_SSID "mywifissid"
-*/
+typedef struct
+{
+    const char *wifi_ssid;
+    const char *wifi_pass;
+} wifi_creds_t;
+
+static wifi_creds_t wifi_creds[] = {
+    {
+        .wifi_ssid = "Hari 5th floor",
+        .wifi_pass = "7259466152",
+    },
+    {
+        .wifi_ssid = "KBs GT 2 Pro",
+        .wifi_pass = "24681355",
+    },
+    {
+        .wifi_ssid = "500 Server error!",
+        .wifi_pass = "password_02",
+    },
+    {
+        .wifi_ssid = "My Galaxy",
+        .wifi_pass = "Galaxy@123",
+    },
+};
+static uint8_t wc_index = 0;
+static bool wifi_connected = false;
+static int s_retry_num = 0;
+
+static void next_wifi_creds(void)
+{
+    wc_index = (wc_index + 1) % (sizeof(wifi_creds) / sizeof(wifi_creds[0]));
+}
 
 /* STA Configuration */
 // #define EXAMPLE_ESP_WIFI_STA_SSID "Kaushik's GT 2 Pro"
@@ -71,8 +101,6 @@
 // static const char *TAG_AP = "WiFi SoftAP";
 // static const char *TAG_STA = "WiFi Sta";
 
-static int s_retry_num = 0;
-
 /* FreeRTOS event group to signal when we are connected/disconnected */
 static EventGroupHandle_t s_wifi_event_group;
 
@@ -94,7 +122,19 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         esp_wifi_connect();
         APPLOG_I("Station started");
     }
-    else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
+    else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
+    {
+        // // Retry to reconnect
+        // if (s_retry_num < WIFI_MAX_RETRY_PER_SSID)
+        // {
+        //     xEventGroupSetBits(s_wifi_event_group, WEVT_SET_CONFIG);
+        // }
+        // else
+        // {
+        //     xEventGroupSetBits(s_wifi_event_group, WEVT_CONNECTION_FAILED);
+        // }
+    }
+    else if (event_base == WIFI_EVENT && event_id == IP_EVENT_STA_GOT_IP)
     {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         APPLOG_I("Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
@@ -174,7 +214,7 @@ void softap_set_dns_addr(esp_netif_t *esp_netif_ap, esp_netif_t *esp_netif_sta)
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_netif_dhcps_start(esp_netif_ap));
 }
 
-void wifi_app_main(void)
+void wifi_app_main(void *pvParameters)
 {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -192,16 +232,8 @@ void wifi_app_main(void)
     s_wifi_event_group = xEventGroupCreate();
 
     /* Register Event handler */
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
-                                                        ESP_EVENT_ANY_ID,
-                                                        &wifi_event_handler,
-                                                        NULL,
-                                                        NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
-                                                        IP_EVENT_STA_GOT_IP,
-                                                        &wifi_event_handler,
-                                                        NULL,
-                                                        NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
+    // ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
 
     /*Initialize WiFi */
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -220,42 +252,41 @@ void wifi_app_main(void)
     /* Start WiFi */
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    /*
-     * Wait until either the connection is established (WIFI_CONNECTED_BIT) or
-     * connection failed for the maximum number of re-tries (WIFI_FAIL_BIT).
-     * The bits are set by event_handler() (see above)
-     */
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-                                           WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                           pdFALSE,
-                                           pdFALSE,
-                                           portMAX_DELAY);
+    while (1)
+    {
 
-    /* xEventGroupWaitBits() returns the bits before the call returned,
-     * hence we can test which event actually happened. */
-    if (bits & WIFI_CONNECTED_BIT)
-    {
-        APPLOG_I("connected to ap SSID:%s password:%s",
-                 EXAMPLE_ESP_WIFI_STA_SSID, EXAMPLE_ESP_WIFI_STA_PASSWD);
-        softap_set_dns_addr(esp_netif_ap, esp_netif_sta);
-    }
-    else if (bits & WIFI_FAIL_BIT)
-    {
-        APPLOG_I("Failed to connect to SSID:%s, password:%s",
-                 EXAMPLE_ESP_WIFI_STA_SSID, EXAMPLE_ESP_WIFI_STA_PASSWD);
-    }
-    else
-    {
-        APPLOG_I("UNEXPECTED EVENT");
-        return;
+        EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
+                                               WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                               pdFALSE,
+                                               pdFALSE,
+                                               portMAX_DELAY);
+
+        /* xEventGroupWaitBits() returns the bits before the call returned,
+         * hence we can test which event actually happened. */
+        if (bits & WIFI_CONNECTED_BIT)
+        {
+            APPLOG_I("connected to ap SSID:%s password:%s",
+                     EXAMPLE_ESP_WIFI_STA_SSID, EXAMPLE_ESP_WIFI_STA_PASSWD);
+            softap_set_dns_addr(esp_netif_ap, esp_netif_sta);
+        }
+        else if (bits & WIFI_FAIL_BIT)
+        {
+            APPLOG_I("Failed to connect to SSID:%s, password:%s",
+                     EXAMPLE_ESP_WIFI_STA_SSID, EXAMPLE_ESP_WIFI_STA_PASSWD);
+        }
+        else
+        {
+            APPLOG_I("UNEXPECTED EVENT");
+            return;
+        }
     }
 
     /* Set sta as the default interface */
     esp_netif_set_default_netif(esp_netif_sta);
 
-    // /* Enable napt on the AP netif */
-    // if (esp_netif_napt_enable(esp_netif_ap) != ESP_OK)
-    // {
-    //     APPLOG_I("NAPT not enabled on the netif: %p", esp_netif_ap);
-    // }
+    /* Enable napt on the AP netif */
+    if (esp_netif_napt_enable(esp_netif_ap) != ESP_OK)
+    {
+        APPLOG_I("NAPT not enabled on the netif: %p", esp_netif_ap);
+    }
 }

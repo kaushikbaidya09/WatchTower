@@ -15,7 +15,7 @@
         struct tm t;                                      \
         localtime_r(&tv.tv_sec, &t);                      \
         int millis = tv.tv_usec / 1000;                   \
-        printf("%02d-%02d-%04d_%02d:%02d:%02d.%03d_%s:%d" \
+        printf("%02d-%02d-%04d_%02d:%02d:%02d.%03d %s:%d" \
                "_[" type "] " format "\n",                \
                t.tm_mday, t.tm_mon + 1, t.tm_year + 1900, \
                t.tm_hour, t.tm_min, t.tm_sec, millis,     \

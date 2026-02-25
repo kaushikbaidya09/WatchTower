@@ -17,14 +17,14 @@ void wt_task_main(void *pvParameters)
     while (1)
     {
         // APPLOG_I("wt_task_main running. Core ID: %d", xPortGetCoreID());
-        vTaskDelay(pdMS_TO_TICKS(500));
+        vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
 
 // Main application entry point
 void app_main(void)
 {
-    esp_log_level_set("*", ESP_LOG_INFO); // set all components Log level
+    esp_log_level_set("*", ESP_LOG_NONE); // set all components Log level
 
     xTaskCreatePinnedToCore(wt_task_main, "WT_TASK_MAIN", 4096, NULL, 5, NULL, 1);
     xTaskCreatePinnedToCore(wt_task_wifi, "WT_TASK_WIFI", 4096, NULL, 4, NULL, 0);

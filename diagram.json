@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "author": "WatchTower",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-esp32-s3-devkitc-1",
+      "id": "esp",
+      "top": -48.18,
+      "left": -177.83,
+      "attrs": { "builder": "esp-idf" }
+    },
+    {
+      "type": "wokwi-led-strip",
+      "id": "strip1",
+      "top": -26.7,
+      "left": 0,
+      "attrs": { "pixels": "60", "pixelShape": "square" }
+    }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "esp:5V", "strip1:VDD", "red", [ "h-19.25", "v57.6", "h134.4", "v-249.6" ] ],
+    [ "esp:GND.3", "strip1:VSS", "black", [ "h48", "v-172" ] ],
+    [ "esp:48", "strip1:DIN", "green", [ "h38.4", "v-134" ] ]
+  ],
+  "dependencies": {}
+}

@@ -29,7 +29,7 @@
 /* STA Configuration */
 #define WT_WIFI_STA_SSID "Kaushik's GT 2 Pro" //< Default wifi sta ssid
 #define WT_WIFI_STA_PASSWD "24681355"         //< Default wifi sta ssid password
-#define WT_WIFI_STA_RETRY 2                   //< Maximum retry on wifi station mode
+#define WT_WIFI_STA_RETRY 1                   //< Maximum retry on wifi station mode
 #define WT_WIFI_STA_RETRY_WAIT_MS 10000       //< Retry wait period in milliseconds
 
 /* AP Configuration */
@@ -49,12 +49,16 @@ typedef struct
 
 static wifi_creds_t wt_wifi_sta_profile[] = {
     {
-        .ssid = "Hari 5th floor",
-        .passwd = "7259466152",
+        .ssid = "Wokwi-GUEST",
+        .passwd = "",
     },
     {
         .ssid = "Kaushik's GT 2 Pro",
         .passwd = "24681355",
+    },
+    {
+        .ssid = "Hari 5th floor",
+        .passwd = "7259466152",
     },
 };
 static uint8_t wt_wifi_sta_active_profile = 0;
@@ -66,20 +70,27 @@ static wifi_config_t wifi_sta_config;
 static esp_netif_t *esp_netif_ap = NULL;
 static esp_netif_t *esp_netif_sta = NULL;
 
-static void wt_sta_connect_next_profile(void)
+static void wt_sta_set_config(uint8_t index)
 {
-    wt_wifi_sta_active_profile = (wt_wifi_sta_active_profile + 1) % (sizeof(wt_wifi_sta_profile) / sizeof(wt_wifi_sta_profile[0]));
-
-    strlcpy((char *)wifi_sta_config.sta.ssid, wt_wifi_sta_profile[wt_wifi_sta_active_profile].ssid, sizeof(wifi_sta_config.sta.ssid));
-    strlcpy((char *)wifi_sta_config.sta.password, wt_wifi_sta_profile[wt_wifi_sta_active_profile].passwd, sizeof(wifi_sta_config.sta.password));
+    strlcpy((char *)wifi_sta_config.sta.ssid, wt_wifi_sta_profile[index].ssid, sizeof(wifi_sta_config.sta.ssid));
+    strlcpy((char *)wifi_sta_config.sta.password, wt_wifi_sta_profile[index].passwd, sizeof(wifi_sta_config.sta.password));
     wifi_sta_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
     wifi_sta_config.sta.failure_retry_cnt = WT_WIFI_STA_RETRY;
     wifi_sta_config.sta.threshold.authmode = ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD;
     wifi_sta_config.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
-
-    ESP_ERROR_CHECK(esp_wifi_scan_stop());
-    APPLOG_I("Next profile '%s', '%s'", wifi_sta_config.sta.ssid, wifi_sta_config.sta.password);
+    uint8_t passwd_len = strlen(wt_wifi_sta_profile[index].passwd);
+    if (passwd_len == 0)
+    {
+        wifi_sta_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    }
+    APPLOG_D("WiFi Profile '%s', '%s', '%u'", wifi_sta_config.sta.ssid, wifi_sta_config.sta.password, passwd_len);
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_sta_config));
+}
+
+static void wt_sta_connect_next_profile(void)
+{
+    wt_wifi_sta_active_profile = (wt_wifi_sta_active_profile + 1) % (sizeof(wt_wifi_sta_profile) / sizeof(wt_wifi_sta_profile[0]));
+    wt_sta_set_config(wt_wifi_sta_active_profile);
     esp_wifi_connect();
 }
 
@@ -212,12 +223,7 @@ void wt_task_wifi(void *pvParameters)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
 
     /* WiFi Station Config */
-    strlcpy((char *)wifi_sta_config.sta.ssid, wt_wifi_sta_profile[wt_wifi_sta_active_profile].ssid, sizeof(wifi_sta_config.sta.ssid));
-    strlcpy((char *)wifi_sta_config.sta.password, wt_wifi_sta_profile[wt_wifi_sta_active_profile].passwd, sizeof(wifi_sta_config.sta.password));
-    wifi_sta_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
-    wifi_sta_config.sta.failure_retry_cnt = WT_WIFI_STA_RETRY;
-    wifi_sta_config.sta.threshold.authmode = ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD;
-    wifi_sta_config.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
+    wt_sta_set_config(wt_wifi_sta_active_profile);
 
     /* WiFi Access Point Config */
     strlcpy((char *)wifi_ap_config.ap.ssid, WT_WIFI_AP_SSID, sizeof(wifi_ap_config.ap.ssid));

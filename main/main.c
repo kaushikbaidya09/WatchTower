@@ -26,9 +26,12 @@ void app_main(void)
 {
     esp_log_level_set("*", ESP_LOG_NONE); // set all components Log level
 
+    // Tasks on Core-00
+    xTaskCreatePinnedToCore(wt_task_wifi, "WT_TASK_WIFI", 8096, NULL, 4, NULL, 0);
+    
+    // Tasks on Core-01
     xTaskCreatePinnedToCore(wt_task_main, "WT_TASK_MAIN", 4096, NULL, 5, NULL, 1);
-    xTaskCreatePinnedToCore(wt_task_wifi, "WT_TASK_WIFI", 4096, NULL, 4, NULL, 0);
-    xTaskCreatePinnedToCore(wt_task_led, "WT_TASK_LED", 8192, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(wt_task_led, "WT_TASK_LED", 16384, NULL, 5, NULL, 1);
 
     while (1)
     {

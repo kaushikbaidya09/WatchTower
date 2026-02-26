@@ -9,11 +9,9 @@
 
 #define RMT_LED_STRIP_RESOLUTION_HZ 10000000 // 10MHz resolution, 1 tick = 0.1us (led strip needs a high resolution)
 #define RMT_LED_STRIP_GPIO_NUM      48
-
-#define EXAMPLE_LED_NUMBERS         25
-
+#define EXAMPLE_LED_NUMBERS         60
 #define EXAMPLE_FRAME_DURATION_MS   20
-#define EXAMPLE_ANGLE_INC_FRAME     0.02
+#define EXAMPLE_ANGLE_INC_FRAME     1
 #define EXAMPLE_ANGLE_INC_LED       0.3
 
 static const char *TAG = "example";

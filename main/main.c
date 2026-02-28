@@ -11,13 +11,29 @@
 #include "wt_app_log.h"
 #include "wt_app_wifi.h"
 #include "wt_app_led.h"
+#include "wt_seg_display.h"
 
 void wt_task_main(void *pvParameters)
 {
+    APPLOG_I("Sending led to show time");
     while (1)
     {
-        // APPLOG_I("wt_task_main running. Core ID: %d", xPortGetCoreID());
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        while (1)
+        {
+            wt_segd_request_t req = {
+                .mode = WT_SEGD_MODE_TIME,
+                .value = 0,
+                .colon = true,
+                .colon_blink = true,
+                .anim = WT_SEGD_ANIM_SOLID,
+                .color_on = WT_SEGD_CYAN,
+                .color_off = WT_SEGD_OFF,
+                .intensity = 255,
+            };
+            if (wt_segd_queue)
+                xQueueOverwrite(wt_segd_queue, &req);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
     }
 }
 
@@ -28,7 +44,7 @@ void app_main(void)
 
     // Tasks on Core-00
     xTaskCreatePinnedToCore(wt_task_wifi, "WT_TASK_WIFI", 8096, NULL, 4, NULL, 0);
-    
+
     // Tasks on Core-01
     xTaskCreatePinnedToCore(wt_task_main, "WT_TASK_MAIN", 4096, NULL, 5, NULL, 1);
     xTaskCreatePinnedToCore(wt_task_led, "WT_TASK_LED", 16384, NULL, 5, NULL, 1);

@@ -1,10 +1,20 @@
 idf_component_register(
     SRCS 
        "wt_app_wifi.c"
+       "wt_app_web.c"
+       "wt_app_settings.c"
     INCLUDE_DIRS 
         "include"
-    PRIV_REQUIRES 
+    REQUIRES 
         esp_wifi 
         nvs_flash
+        esp_http_server
+        spiffs
+        esp_partition
+        esp_timer
+        app_update
+        spi_flash
+        json
         wt_app_log
+        wt_app_led
 )

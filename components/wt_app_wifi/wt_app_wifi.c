@@ -44,7 +44,7 @@
 /* ------------------------------------------------------------------ */
 /*  STA retry policy                                                     */
 /* ------------------------------------------------------------------ */
-#define WT_WIFI_STA_RETRY 2
+#define WT_WIFI_STA_RETRY 1
 #define WT_WIFI_STA_RETRY_WAIT_MS 10000
 
 /* ------------------------------------------------------------------ */
@@ -239,7 +239,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             s_status.sta_connected = false;
             memset(s_status.sta_ip, 0, sizeof(s_status.sta_ip));
             xSemaphoreGive(s_mutex);
-            APPLOG_W("STA disconnected");
+            // APPLOG_W("STA disconnected");
             break;
 
         case WIFI_EVENT_AP_START:
@@ -393,20 +393,13 @@ bool wt_wifi_connect_profile(int index)
 
 void wt_task_wifi(void *pvParameters)
 {
+    APPLOG_I("---------- WIFI TASK STARTED ----------");
+
     s_mutex = xSemaphoreCreateMutex();
     memset(&s_status, 0, sizeof(s_status));
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-
-    /* NVS init */
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
-    {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
 
     /* Load STA profiles from NVS */
     nvs_load_profiles();

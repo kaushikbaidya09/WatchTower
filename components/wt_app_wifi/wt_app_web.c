@@ -18,13 +18,11 @@
 #include "esp_http_server.h"
 #include "esp_spiffs.h"
 #include "esp_timer.h"
-// #include "esp_vfs_spiffs.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "esp_system.h"
 #include "esp_chip_info.h"
 #include "esp_flash.h"
-
 #include "cJSON.h"
 
 /* ------------------------------------------------------------------ */
@@ -93,6 +91,8 @@ static bool get_query_int(httpd_req_t *req, const char *key, int *out)
 
 #define SPIFFS_BASE "/spiffs"
 #define INDEX_HTML SPIFFS_BASE "/index.html"
+#define STYLE_CSS SPIFFS_BASE "/style.css"
+#define APP_JS SPIFFS_BASE "/app.js"
 
 static bool spiffs_mounted = false;
 
@@ -153,11 +153,31 @@ static esp_err_t handler_root(httpd_req_t *req)
         return serve_file(req, INDEX_HTML, "text/html");
     }
     /* Fallback — minimal redirect page */
-    const char *fb = "<html><body><h2>WallTick</h2>"
+    const char *fb = "<html><body><h2>WatchTower</h2>"
                      "<p>Upload index.html via OTA tab.</p></body></html>";
     httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr(req, fb);
     return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  GET /style.css                                                       */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_style_css(httpd_req_t *req)
+{
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=300");
+    return serve_file(req, STYLE_CSS, "text/css");
+}
+
+/* ------------------------------------------------------------------ */
+/*  GET /app.js                                                          */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_app_js(httpd_req_t *req)
+{
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=300");
+    return serve_file(req, APP_JS, "application/javascript");
 }
 
 /* ------------------------------------------------------------------ */
@@ -173,32 +193,110 @@ static esp_err_t handler_system(httpd_req_t *req)
     esp_flash_get_size(NULL, &flash_size);
 
     uint32_t free_heap = esp_get_free_heap_size();
+    uint32_t total_heap = esp_get_minimum_free_heap_size() + free_heap; /* approx */
     uint32_t min_heap = esp_get_minimum_free_heap_size();
     int64_t uptime_s = esp_timer_get_time() / 1000000;
 
+    /* OTA partition info */
     const esp_partition_t *running = esp_ota_get_running_partition();
-    char part_label[18] = "unknown";
-    if (running)
-        strlcpy(part_label, running->label, sizeof(part_label));
+    const esp_partition_t *app0 = esp_partition_find_first(
+        ESP_PARTITION_TYPE_APP,
+        ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
+    const esp_partition_t *app1 = esp_partition_find_first(
+        ESP_PARTITION_TYPE_APP,
+        ESP_PARTITION_SUBTYPE_APP_OTA_1, NULL);
+    char ota_slot[8] = "app0";
+    char app0_st[12] = "valid";
+    char app1_st[12] = "empty";
+    if (running && app1 && running->address == app1->address)
+    {
+        strlcpy(ota_slot, "app1", sizeof(ota_slot));
+    }
+    (void)app0;
+    (void)app1_st;
 
-    char buf[512];
+    /* SPIFFS usage */
+    size_t spiffs_total = 0, spiffs_used = 0;
+    esp_spiffs_info("spiffs", &spiffs_total, &spiffs_used);
+    int spiffs_pct = spiffs_total ? (int)(spiffs_used * 100 / spiffs_total) : 0;
+
+    /* WiFi status for dashboard */
+    wt_wifi_status_t wst = wt_wifi_get_status();
+
+    /* Reset reason */
+    const char *reset_reason = "unknown";
+    switch (esp_reset_reason())
+    {
+    case ESP_RST_POWERON:
+        reset_reason = "power-on";
+        break;
+    case ESP_RST_SW:
+        reset_reason = "software";
+        break;
+    case ESP_RST_PANIC:
+        reset_reason = "panic";
+        break;
+    case ESP_RST_WDT:
+        reset_reason = "watchdog";
+        break;
+    case ESP_RST_DEEPSLEEP:
+        reset_reason = "deep-sleep";
+        break;
+    default:
+        break;
+    }
+
+    const char *chip_name =
+        (chip.model == CHIP_ESP32) ? "ESP32" : (chip.model == CHIP_ESP32S2) ? "ESP32-S2"
+                                           : (chip.model == CHIP_ESP32S3)   ? "ESP32-S3"
+                                           : (chip.model == CHIP_ESP32C3)   ? "ESP32-C3"
+                                                                            : "Unknown";
+
+    /* Build a flat JSON object with all fields the web UI needs */
+    static char buf[1024];
     snprintf(buf, sizeof(buf),
-             "{\"chip\":\"%s\",\"cores\":%d,\"revision\":%d,"
-             "\"flash_kb\":%u,\"free_heap\":%lu,\"min_heap\":%lu,"
-             "\"uptime_s\":%lld,\"partition\":\"%s\","
-             "\"idf_ver\":\"%s\"}",
-             (chip.model == CHIP_ESP32) ? "ESP32" : (chip.model == CHIP_ESP32S2) ? "ESP32-S2"
-                                                : (chip.model == CHIP_ESP32S3)   ? "ESP32-S3"
-                                                : (chip.model == CHIP_ESP32C3)   ? "ESP32-C3"
-                                                                                 : "Unknown",
+             "{"
+             "\"chip_model\":\"%s\","
+             "\"cpu_cores\":%d,"
+             "\"cpu_freq_mhz\":240,"
+             "\"cpu_usage\":0,"
+             "\"flash_size\":%u,"
+             "\"flash_used_pct\":0,"
+             "\"free_heap\":%lu,"
+             "\"total_heap\":%lu,"
+             "\"min_free_heap\":%lu,"
+             "\"spiffs_used_pct\":%d,"
+             "\"uptime_s\":%lld,"
+             "\"app_version\":\"%s\","
+             "\"build_date\":\"%s %s\","
+             "\"idf_version\":\"%s\","
+             "\"ota_slot\":\"%s\","
+             "\"app0_state\":\"%s\","
+             "\"app1_state\":\"%s\","
+             "\"temperature\":0.0,"
+             "\"reset_reason\":\"%s\","
+             "\"sta_connected\":%s,"
+             "\"sta_ssid\":\"%s\","
+             "\"sta_ip\":\"%s\","
+             "\"rssi\":%d,"
+             "\"ap_ip\":\"%s\""
+             "}",
+             chip_name,
              chip.cores,
-             chip.revision,
-             (unsigned)(flash_size / 1024),
-             free_heap,
-             min_heap,
+             (unsigned)(flash_size),
+             free_heap, total_heap, min_heap,
+             spiffs_pct,
              (long long)uptime_s,
-             part_label,
-             esp_get_idf_version());
+             "1.0.0",
+             __DATE__, __TIME__,
+             esp_get_idf_version(),
+             ota_slot, app0_st, "empty",
+             reset_reason,
+             wst.sta_connected ? "true" : "false",
+             wst.sta_ssid,
+             wst.sta_ip,
+             wst.sta_rssi,
+             wst.ap_ip);
 
     RESP_JSON(req, buf);
     return ESP_OK;
@@ -211,13 +309,13 @@ static esp_err_t handler_system(httpd_req_t *req)
 static esp_err_t handler_logs(httpd_req_t *req)
 {
     int seq_in = 0;
-    get_query_int(req, "seq", &seq_in);
+    /* Accept both ?seq= (native) and ?since= (JS legacy) */
+    if (!get_query_int(req, "seq", &seq_in))
+        get_query_int(req, "since", &seq_in);
 
-    /* 8 KB should hold ~40 log entries at 200 chars each */
     static char log_buf[8192];
     uint32_t next_seq = 0;
     wt_log_read_json((uint32_t)seq_in, log_buf, sizeof(log_buf), &next_seq);
-
     RESP_JSON(req, log_buf);
     return ESP_OK;
 }
@@ -232,25 +330,21 @@ static esp_err_t handler_wifi_get(httpd_req_t *req)
     wt_wifi_profile_t prof[WT_WIFI_MAX_PROFILES];
     int cnt = wt_wifi_get_profiles(prof, WT_WIFI_MAX_PROFILES);
 
+    /* Return a unified flat object; JS reads both connected status and profiles */
     cJSON *root = cJSON_CreateObject();
 
-    /* STA */
-    cJSON *sta = cJSON_AddObjectToObject(root, "sta");
-    cJSON_AddBoolToObject(sta, "started", st.sta_started);
-    cJSON_AddBoolToObject(sta, "connected", st.sta_connected);
-    cJSON_AddStringToObject(sta, "ssid", st.sta_ssid);
-    cJSON_AddStringToObject(sta, "ip", st.sta_ip);
-    cJSON_AddNumberToObject(sta, "rssi", st.sta_rssi);
-    cJSON_AddNumberToObject(sta, "active_profile", st.sta_active_profile);
+    /* Flat STA fields (for /api/wifi/status) */
+    cJSON_AddBoolToObject(root, "connected", st.sta_connected);
+    cJSON_AddStringToObject(root, "ssid", st.sta_ssid);
+    cJSON_AddStringToObject(root, "ip", st.sta_ip);
+    cJSON_AddNumberToObject(root, "rssi", st.sta_rssi);
+    cJSON_AddNumberToObject(root, "channel", 0);
+    cJSON_AddStringToObject(root, "ap_ip", st.ap_ip);
+    cJSON_AddBoolToObject(root, "ap_active", st.ap_active);
+    cJSON_AddStringToObject(root, "ap_ssid", st.ap_ssid);
+    cJSON_AddNumberToObject(root, "ap_clients", st.ap_clients);
 
-    /* AP */
-    cJSON *ap = cJSON_AddObjectToObject(root, "ap");
-    cJSON_AddBoolToObject(ap, "active", st.ap_active);
-    cJSON_AddStringToObject(ap, "ssid", st.ap_ssid);
-    cJSON_AddStringToObject(ap, "ip", st.ap_ip);
-    cJSON_AddNumberToObject(ap, "clients", st.ap_clients);
-
-    /* Profiles */
+    /* Profiles array (for /api/wifi/profiles) */
     cJSON *profiles = cJSON_AddArrayToObject(root, "profiles");
     for (int i = 0; i < cnt; i++)
     {
@@ -288,13 +382,17 @@ static esp_err_t handler_wifi_add_profile(httpd_req_t *req)
     }
 
     const char *ssid = cJSON_GetStringValue(cJSON_GetObjectItem(j, "ssid"));
-    cJSON *passj = cJSON_GetObjectItem(j, "passwd");
+
+    /* Accept both "password" (JS) and "passwd" (legacy) */
+    cJSON *passj = cJSON_GetObjectItem(j, "password");
+    if (!passj)
+        passj = cJSON_GetObjectItem(j, "passwd");
     const char *passwd = passj ? cJSON_GetStringValue(passj) : "";
 
     bool ok = ssid && wt_wifi_add_profile(ssid, passwd ? passwd : "");
     cJSON_Delete(j);
 
-    RESP_JSON(req, ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"full or invalid\"}");
+    RESP_JSON(req, ok ? "{\"status\":\"ok\"}" : "{\"status\":\"err\",\"error\":\"full or invalid\"}");
     return ESP_OK;
 }
 
@@ -304,14 +402,38 @@ static esp_err_t handler_wifi_add_profile(httpd_req_t *req)
 
 static esp_err_t handler_wifi_del_profile(httpd_req_t *req)
 {
-    int idx = 0;
-    if (!get_query_int(req, "idx", &idx))
+    int idx = -1;
+
+    /* Try query param first (DELETE requests) */
+    get_query_int(req, "idx", &idx);
+
+    /* Also try JSON body (POST requests from JS) */
+    if (idx < 0 && req->content_len > 0)
+    {
+        char body[128];
+        if (read_body(req, body, sizeof(body)) > 0)
+        {
+            cJSON *j = cJSON_Parse(body);
+            if (j)
+            {
+                cJSON *idxj = cJSON_GetObjectItem(j, "index");
+                if (!idxj)
+                    idxj = cJSON_GetObjectItem(j, "idx");
+                if (idxj)
+                    idx = (int)cJSON_GetNumberValue(idxj);
+                cJSON_Delete(j);
+            }
+        }
+    }
+
+    if (idx < 0)
     {
         RESP_ERR(req, "missing idx");
         return ESP_OK;
     }
+
     bool ok = wt_wifi_remove_profile(idx);
-    RESP_JSON(req, ok ? "{\"ok\":true}" : "{\"ok\":false}");
+    RESP_JSON(req, ok ? "{\"status\":\"ok\"}" : "{\"status\":\"err\"}");
     return ESP_OK;
 }
 
@@ -321,14 +443,32 @@ static esp_err_t handler_wifi_del_profile(httpd_req_t *req)
 
 static esp_err_t handler_wifi_connect(httpd_req_t *req)
 {
-    int idx = 0;
-    if (!get_query_int(req, "idx", &idx))
+    int idx = -1;
+    get_query_int(req, "idx", &idx);
+    if (idx < 0 && req->content_len > 0)
+    {
+        char body[128];
+        if (read_body(req, body, sizeof(body)) > 0)
+        {
+            cJSON *j = cJSON_Parse(body);
+            if (j)
+            {
+                cJSON *idxj = cJSON_GetObjectItem(j, "index");
+                if (!idxj)
+                    idxj = cJSON_GetObjectItem(j, "idx");
+                if (idxj)
+                    idx = (int)cJSON_GetNumberValue(idxj);
+                cJSON_Delete(j);
+            }
+        }
+    }
+    if (idx < 0)
     {
         RESP_ERR(req, "missing idx");
         return ESP_OK;
     }
     bool ok = wt_wifi_connect_profile(idx);
-    RESP_JSON(req, ok ? "{\"ok\":true}" : "{\"ok\":false}");
+    RESP_JSON(req, ok ? "{\"status\":\"ok\"}" : "{\"status\":\"err\"}");
     return ESP_OK;
 }
 
@@ -339,18 +479,56 @@ static esp_err_t handler_wifi_connect(httpd_req_t *req)
 static esp_err_t handler_settings_get(httpd_req_t *req)
 {
     wt_settings_t s = wt_settings_get();
-    char buf[512];
+
+    /* brightness mapped 0-100 from intensity 0-255 */
+    int brt = (int)((s.intensity * 100) / 255);
+
+    char buf[1024];
     snprintf(buf, sizeof(buf),
-             "{\"color_on\":{\"r\":%d,\"g\":%d,\"b\":%d},"
-             "\"color_off\":{\"r\":%d,\"g\":%d,\"b\":%d},"
-             "\"intensity\":%d,\"anim\":%d,"
-             "\"colon_blink\":%s,"
-             "\"timezone\":\"%s\"}",
-             s.color_on.r, s.color_on.g, s.color_on.b,
-             s.color_off.r, s.color_off.g, s.color_off.b,
-             s.intensity, (int)s.anim,
+             "{"
+             "\"color\":\"%s\","
+             "\"brightness\":%d,"
+             "\"anim_colon\":%s,"
+             "\"anim_scroll\":%s,"
+             "\"anim_pulse\":%s,"
+             "\"anim_transition\":%s,"
+             "\"reaction_effect\":\"%s\","
+             "\"time_format\":%d,"
+             "\"timezone\":\"%s\","
+             "\"ntp_server\":\"%s\","
+             "\"alarm1_time\":\"%s\","
+             "\"alarm1_en\":%s,"
+             "\"alarm2_time\":\"%s\","
+             "\"alarm2_en\":%s,"
+             "\"notif_type\":\"%s\","
+             "\"notif_sound\":\"%s\","
+             "\"sleep_mode\":\"%s\","
+             "\"sleep_timeout\":%d,"
+             "\"batt_alert_pct\":%d,"
+             "\"ps_dim\":%s,"
+             "\"ps_wifi\":%s"
+             "}",
+             s.color_hex[0] ? s.color_hex : "#00c8ff",
+             brt,
              s.colon_blink ? "true" : "false",
-             s.timezone);
+             s.anim_scroll ? "true" : "false",
+             s.anim_pulse ? "true" : "false",
+             s.anim_transition ? "true" : "false",
+             s.reaction_effect,
+             s.time_format,
+             s.timezone,
+             s.ntp_server,
+             s.alarm1_time,
+             s.alarm1_en ? "true" : "false",
+             s.alarm2_time,
+             s.alarm2_en ? "true" : "false",
+             s.notif_type,
+             s.notif_sound,
+             s.sleep_mode,
+             s.sleep_timeout_s,
+             s.batt_alert_pct,
+             s.ps_dim ? "true" : "false",
+             s.ps_wifi ? "true" : "false");
     RESP_JSON(req, buf);
     return ESP_OK;
 }
@@ -361,7 +539,7 @@ static esp_err_t handler_settings_get(httpd_req_t *req)
 
 static esp_err_t handler_settings_set(httpd_req_t *req)
 {
-    char body[512];
+    char body[1024];
     if (read_body(req, body, sizeof(body)) < 0)
     {
         RESP_ERR(req, "read failed");
@@ -376,54 +554,143 @@ static esp_err_t handler_settings_set(httpd_req_t *req)
 
     wt_settings_t s = wt_settings_get();
 
-    /* color_on */
-    cJSON *con = cJSON_GetObjectItem(j, "color_on");
-    if (con)
+    /* ── Display fields ── */
+    cJSON *color = cJSON_GetObjectItem(j, "color");
+    if (color && cJSON_IsString(color))
     {
-        cJSON *r = cJSON_GetObjectItem(con, "r");
-        cJSON *g = cJSON_GetObjectItem(con, "g");
-        cJSON *b = cJSON_GetObjectItem(con, "b");
-        if (r)
-            s.color_on.r = (uint8_t)cJSON_GetNumberValue(r);
-        if (g)
-            s.color_on.g = (uint8_t)cJSON_GetNumberValue(g);
-        if (b)
-            s.color_on.b = (uint8_t)cJSON_GetNumberValue(b);
+        const char *hex = cJSON_GetStringValue(color);
+        strlcpy(s.color_hex, hex, sizeof(s.color_hex));
+        wt_settings_parse_hex_color(hex,
+                                    &s.color_on.r, &s.color_on.g, &s.color_on.b);
     }
-    /* color_off */
-    cJSON *cof = cJSON_GetObjectItem(j, "color_off");
-    if (cof)
+    cJSON *brt = cJSON_GetObjectItem(j, "brightness");
+    if (brt)
     {
-        cJSON *r = cJSON_GetObjectItem(cof, "r");
-        cJSON *g = cJSON_GetObjectItem(cof, "g");
-        cJSON *b = cJSON_GetObjectItem(cof, "b");
-        if (r)
-            s.color_off.r = (uint8_t)cJSON_GetNumberValue(r);
-        if (g)
-            s.color_off.g = (uint8_t)cJSON_GetNumberValue(g);
-        if (b)
-            s.color_off.b = (uint8_t)cJSON_GetNumberValue(b);
+        int pct = (int)cJSON_GetNumberValue(brt);
+        s.intensity = (uint8_t)((pct * 255) / 100);
     }
-    cJSON *intj = cJSON_GetObjectItem(j, "intensity");
-    if (intj)
-        s.intensity = (uint8_t)cJSON_GetNumberValue(intj);
+    cJSON *cb = cJSON_GetObjectItem(j, "anim_colon");
+    if (cb)
+        s.colon_blink = cJSON_IsTrue(cb);
+    cJSON *asc = cJSON_GetObjectItem(j, "anim_scroll");
+    if (asc)
+        s.anim_scroll = cJSON_IsTrue(asc);
+    cJSON *apu = cJSON_GetObjectItem(j, "anim_pulse");
+    if (apu)
+        s.anim_pulse = cJSON_IsTrue(apu);
+    cJSON *atr = cJSON_GetObjectItem(j, "anim_transition");
+    if (atr)
+        s.anim_transition = cJSON_IsTrue(atr);
+    cJSON *reff = cJSON_GetObjectItem(j, "reaction_effect");
+    if (reff && cJSON_IsString(reff))
+        strlcpy(s.reaction_effect, cJSON_GetStringValue(reff), sizeof(s.reaction_effect));
 
-    cJSON *animj = cJSON_GetObjectItem(j, "anim");
-    if (animj)
-        s.anim = (wt_segd_anim_t)(int)cJSON_GetNumberValue(animj);
+    /* ── Clock fields ── */
+    cJSON *tf = cJSON_GetObjectItem(j, "time_format");
+    if (tf)
+        s.time_format = (uint8_t)cJSON_GetNumberValue(tf);
+    cJSON *tz = cJSON_GetObjectItem(j, "timezone");
+    if (tz && cJSON_IsString(tz))
+        strlcpy(s.timezone, cJSON_GetStringValue(tz), sizeof(s.timezone));
+    cJSON *ntp = cJSON_GetObjectItem(j, "ntp_server");
+    if (ntp && cJSON_IsString(ntp))
+        strlcpy(s.ntp_server, cJSON_GetStringValue(ntp), sizeof(s.ntp_server));
+    cJSON *al1t = cJSON_GetObjectItem(j, "alarm1_time");
+    if (al1t && cJSON_IsString(al1t))
+        strlcpy(s.alarm1_time, cJSON_GetStringValue(al1t), sizeof(s.alarm1_time));
+    cJSON *al1e = cJSON_GetObjectItem(j, "alarm1_en");
+    if (al1e)
+        s.alarm1_en = cJSON_IsTrue(al1e);
+    cJSON *al2t = cJSON_GetObjectItem(j, "alarm2_time");
+    if (al2t && cJSON_IsString(al2t))
+        strlcpy(s.alarm2_time, cJSON_GetStringValue(al2t), sizeof(s.alarm2_time));
+    cJSON *al2e = cJSON_GetObjectItem(j, "alarm2_en");
+    if (al2e)
+        s.alarm2_en = cJSON_IsTrue(al2e);
+    cJSON *ntt = cJSON_GetObjectItem(j, "notif_type");
+    if (ntt && cJSON_IsString(ntt))
+        strlcpy(s.notif_type, cJSON_GetStringValue(ntt), sizeof(s.notif_type));
+    cJSON *nts = cJSON_GetObjectItem(j, "notif_sound");
+    if (nts && cJSON_IsString(nts))
+        strlcpy(s.notif_sound, cJSON_GetStringValue(nts), sizeof(s.notif_sound));
 
-    cJSON *cbj = cJSON_GetObjectItem(j, "colon_blink");
-    if (cbj)
-        s.colon_blink = cJSON_IsTrue(cbj);
-
-    cJSON *tzj = cJSON_GetObjectItem(j, "timezone");
-    if (tzj && cJSON_IsString(tzj))
-        strlcpy(s.timezone, cJSON_GetStringValue(tzj), sizeof(s.timezone));
+    /* ── Power fields ── */
+    cJSON *slm = cJSON_GetObjectItem(j, "sleep_mode");
+    if (slm && cJSON_IsString(slm))
+        strlcpy(s.sleep_mode, cJSON_GetStringValue(slm), sizeof(s.sleep_mode));
+    cJSON *slt = cJSON_GetObjectItem(j, "sleep_timeout");
+    if (slt)
+        s.sleep_timeout_s = (uint16_t)cJSON_GetNumberValue(slt);
+    cJSON *bat = cJSON_GetObjectItem(j, "batt_alert_pct");
+    if (bat)
+        s.batt_alert_pct = (uint8_t)cJSON_GetNumberValue(bat);
+    cJSON *psd = cJSON_GetObjectItem(j, "ps_dim");
+    if (psd)
+        s.ps_dim = cJSON_IsTrue(psd);
+    cJSON *psw = cJSON_GetObjectItem(j, "ps_wifi");
+    if (psw)
+        s.ps_wifi = cJSON_IsTrue(psw);
 
     cJSON_Delete(j);
 
     bool ok = wt_settings_set(&s);
-    RESP_JSON(req, ok ? "{\"ok\":true}" : "{\"ok\":false}");
+    RESP_JSON(req, ok ? "{\"status\":\"ok\"}" : "{\"status\":\"err\",\"error\":\"nvs write failed\"}");
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  GET /api/power                                                       */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_power_get(httpd_req_t *req)
+{
+    wt_settings_t s = wt_settings_get();
+    /* Battery reading — extend wt_app_hw.h for real ADC values */
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "{"
+             "\"battery_pct\":0,"
+             "\"voltage\":0.0,"
+             "\"current\":0,"
+             "\"source\":\"USB\","
+             "\"eta_hours\":0,"
+             "\"sleep_mode\":\"%s\","
+             "\"sleep_timeout\":%d,"
+             "\"batt_alert_pct\":%d,"
+             "\"ps_dim\":%s,"
+             "\"ps_wifi\":%s"
+             "}",
+             s.sleep_mode, s.sleep_timeout_s, s.batt_alert_pct,
+             s.ps_dim ? "true" : "false",
+             s.ps_wifi ? "true" : "false");
+    RESP_JSON(req, buf);
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  POST /api/ntp/sync                                                   */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_ntp_sync(httpd_req_t *req)
+{
+    char body[256];
+    read_body(req, body, sizeof(body));
+    cJSON *j = cJSON_Parse(body);
+    if (j)
+    {
+        cJSON *srv = cJSON_GetObjectItem(j, "server");
+        if (srv && cJSON_IsString(srv))
+        {
+            wt_settings_t s = wt_settings_get();
+            strlcpy(s.ntp_server, cJSON_GetStringValue(srv),
+                    sizeof(s.ntp_server));
+            wt_settings_set(&s);
+        }
+        cJSON_Delete(j);
+    }
+    /* Trigger SNTP resync if available */
+    APPLOG_I("NTP sync requested");
+    RESP_JSON(req, "{\"status\":\"ok\"}");
     return ESP_OK;
 }
 
@@ -567,11 +834,10 @@ static void start_server(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.uri_match_fn = httpd_uri_match_wildcard;
-    cfg.max_uri_handlers = 16;
+    cfg.max_uri_handlers = 28;
     cfg.stack_size = 16384;
     cfg.recv_wait_timeout = 10;
     cfg.send_wait_timeout = 10;
-    cfg.server_port = 8085;
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &cfg) != ESP_OK)
@@ -588,21 +854,32 @@ static void start_server(void)
     } while (0)
 
     REG(HTTP_GET, "/", handler_root);
+    REG(HTTP_GET, "/style.css", handler_style_css);
+    REG(HTTP_GET, "/app.js", handler_app_js);
     REG(HTTP_GET, "/api/system", handler_system);
+    REG(HTTP_GET, "/api/status", handler_system);
     REG(HTTP_GET, "/api/logs", handler_logs);
     REG(HTTP_GET, "/api/wifi", handler_wifi_get);
+    REG(HTTP_GET, "/api/wifi/status", handler_wifi_get);
+    REG(HTTP_GET, "/api/wifi/profiles", handler_wifi_get);
     REG(HTTP_POST, "/api/wifi/profile", handler_wifi_add_profile);
+    REG(HTTP_POST, "/api/wifi/profiles", handler_wifi_add_profile);
     REG(HTTP_DELETE, "/api/wifi/profile", handler_wifi_del_profile);
+    REG(HTTP_POST, "/api/wifi/profile/delete", handler_wifi_del_profile);
     REG(HTTP_POST, "/api/wifi/connect", handler_wifi_connect);
     REG(HTTP_GET, "/api/settings", handler_settings_get);
     REG(HTTP_POST, "/api/settings", handler_settings_set);
+    REG(HTTP_POST, "/api/clock", handler_settings_set);
+    REG(HTTP_POST, "/api/power", handler_settings_set);
+    REG(HTTP_GET, "/api/power", handler_power_get);
+    REG(HTTP_POST, "/api/ntp/sync", handler_ntp_sync);
     REG(HTTP_POST, "/api/ota/firmware", handler_ota_firmware);
     REG(HTTP_POST, "/api/ota/webapp", handler_ota_webapp);
     REG(HTTP_POST, "/api/reboot", handler_reboot);
 
 #undef REG
 
-    APPLOG_I("HTTP server started on port '%d'", cfg.server_port);
+    APPLOG_I("HTTP server started on port 80");
 }
 
 /* ------------------------------------------------------------------ */
@@ -611,6 +888,8 @@ static void start_server(void)
 
 void wt_task_web(void *pvParameters)
 {
+    APPLOG_I("---------- WEB TASK STARTED ----------");
+
     /* Wait for WiFi AP to come up */
     vTaskDelay(pdMS_TO_TICKS(3000));
 

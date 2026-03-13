@@ -1,1701 +1,869 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en" data-theme="dark">
-
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WatchTower — Device Console</title>
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow:wght@300;400;500;600;700&family=Barlow+Condensed:wght@400;600;700&display=swap');
-
-    :root {
-      --r-sm: 6px;
-      --r-md: 12px;
-      --r-lg: 18px;
-      --r-xl: 24px;
-      --r-pill: 999px;
-      --tr: .2s ease;
-      --ff-disp: 'Bebas Neue', sans-serif;
-      --ff-ui: 'Barlow', sans-serif;
-      --ff-cond: 'Barlow Condensed', sans-serif;
-    }
-
-    [data-theme="dark"] {
-      --bg: #0e0e0e;
-      --bg2: #161616;
-      --bg3: #1e1e1e;
-      --bg4: #252525;
-      --border: #2e2e2e;
-      --border2: #3a3a3a;
-      --text: #e8e8e8;
-      --text2: #888;
-      --text3: #555;
-      --accent: #fff;
-      --adim: rgba(255, 255, 255, .08);
-      --ahov: rgba(255, 255, 255, .13);
-      --green: #6ddb8a;
-      --gbg: rgba(109, 219, 138, .1);
-      --red: #e05c5c;
-      --rbg: rgba(224, 92, 92, .1);
-      --amber: #d4a84b;
-      --abg: rgba(212, 168, 75, .1);
-      --blue: #7ab3d4;
-      --sh: 0 4px 24px rgba(0, 0, 0, .5);
-      --shsm: 0 2px 10px rgba(0, 0, 0, .3);
-      --glow: 0 0 0 2px rgba(255, 255, 255, .12);
-      --scr: #2e2e2e;
-    }
-
-    [data-theme="light"] {
-      --bg: #f0efed;
-      --bg2: #fff;
-      --bg3: #f7f6f4;
-      --bg4: #eeede9;
-      --border: #d8d5d0;
-      --border2: #c8c5c0;
-      --text: #1a1a1a;
-      --text2: #666;
-      --text3: #aaa;
-      --accent: #1a1a1a;
-      --adim: rgba(0, 0, 0, .06);
-      --ahov: rgba(0, 0, 0, .1);
-      --green: #2d8a4e;
-      --gbg: rgba(45, 138, 78, .1);
-      --red: #b83232;
-      --rbg: rgba(184, 50, 50, .1);
-      --amber: #a07830;
-      --abg: rgba(160, 120, 48, .1);
-      --blue: #3a6fa0;
-      --sh: 0 4px 24px rgba(0, 0, 0, .1);
-      --shsm: 0 2px 10px rgba(0, 0, 0, .06);
-      --glow: 0 0 0 2px rgba(0, 0, 0, .1);
-      --scr: #d0ceca;
-    }
-
-    *,
-    *::before,
-    *::after {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0
-    }
-
-    html,
-    body {
-      height: 100%;
-      background: var(--bg);
-      color: var(--text);
-      font-family: var(--ff-ui);
-      font-size: 15px;
-      line-height: 1.5;
-      overflow: hidden;
-      transition: background var(--tr), color var(--tr)
-    }
-
-    ::-webkit-scrollbar {
-      width: 5px
-    }
-
-    ::-webkit-scrollbar-track {
-      background: transparent
-    }
-
-    ::-webkit-scrollbar-thumb {
-      background: var(--scr);
-      border-radius: 99px
-    }
-
-    #app {
-      display: flex;
-      height: 100vh
-    }
-
-    /* SIDEBAR */
-    #sidebar {
-      width: 240px;
-      min-width: 240px;
-      background: var(--bg2);
-      border-right: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
-      transition: background var(--tr), border-color var(--tr)
-    }
-
-    .brand {
-      padding: 20px 18px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      gap: 14px
-    }
-
-    .brand-icon {
-      width: 46px;
-      height: 46px;
-      flex-shrink: 0
-    }
-
-    .brand-icon svg {
-      width: 100%;
-      height: 100%
-    }
-
-    .brand-name {
-      font-family: var(--ff-disp);
-      font-size: 21px;
-      letter-spacing: 2px;
-      color: var(--text);
-      line-height: 1
-    }
-
-    .brand-sub {
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 3px;
-      text-transform: uppercase;
-      color: var(--text2);
-      margin-top: 3px
-    }
-
-    .nav {
-      flex: 1;
-      padding: 10px;
-      overflow-y: auto
-    }
-
-    .nav-sec {
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 3px;
-      text-transform: uppercase;
-      color: var(--text3);
-      padding: 14px 10px 6px
-    }
-
-    .nav-item {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 10px 12px;
-      cursor: pointer;
-      color: var(--text2);
-      font-size: 14px;
-      font-weight: 500;
-      border-radius: var(--r-md);
-      margin-bottom: 2px;
-      transition: all var(--tr);
-      user-select: none;
-      position: relative
-    }
-
-    .nav-item:hover {
-      background: var(--adim);
-      color: var(--text)
-    }
-
-    .nav-item.active {
-      background: var(--adim);
-      color: var(--text);
-      font-weight: 600
-    }
-
-    .nav-item.active::before {
-      content: '';
-      position: absolute;
-      left: 0;
-      top: 20%;
-      height: 60%;
-      width: 3px;
-      background: var(--text);
-      border-radius: 0 99px 99px 0
-    }
-
-    .nav-icon {
-      width: 32px;
-      height: 32px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: var(--r-sm);
-      background: var(--bg3);
-      font-size: 14px;
-      flex-shrink: 0;
-      transition: background var(--tr)
-    }
-
-    .nav-item.active .nav-icon,
-    .nav-item:hover .nav-icon {
-      background: var(--ahov)
-    }
-
-    .nav-label {}
-
-    .sf {
-      padding: 14px 16px;
-      border-top: 1px solid var(--border)
-    }
-
-    .sp {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 7px 12px;
-      border-radius: var(--r-md);
-      background: var(--bg3);
-      margin-bottom: 6px;
-      font-size: 12px
-    }
-
-    .sd {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      flex-shrink: 0
-    }
-
-    .sd-g {
-      background: var(--green);
-      box-shadow: 0 0 6px var(--green)
-    }
-
-    .sd-r {
-      background: var(--red);
-      box-shadow: 0 0 6px var(--red)
-    }
-
-    .sd-gr {
-      background: var(--text3)
-    }
-
-    .sp-lbl {
-      color: var(--text2);
-      font-size: 11px;
-      flex-shrink: 0
-    }
-
-    .sp-val {
-      color: var(--text);
-      font-size: 12px;
-      font-weight: 600;
-      flex: 1;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis
-    }
-
-    .tgw {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 10px 12px 0
-    }
-
-    .tgl {
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 1px;
-      text-transform: uppercase;
-      color: var(--text2)
-    }
-
-    .tgb {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 14px;
-      border-radius: var(--r-pill);
-      border: 1px solid var(--border2);
-      background: var(--bg3);
-      cursor: pointer;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text);
-      transition: all var(--tr);
-      font-family: var(--ff-ui)
-    }
-
-    .tgb:hover {
-      background: var(--ahov);
-      border-color: var(--text3)
-    }
-
-    /* MAIN */
-    #main {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      background: var(--bg)
-    }
-
-    .topbar {
-      height: 56px;
-      min-height: 56px;
-      background: var(--bg2);
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      padding: 0 24px;
-      gap: 12px;
-      transition: background var(--tr)
-    }
-
-    .bc {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 13px
-    }
-
-    .bc-root {
-      color: var(--text3);
-      font-weight: 500
-    }
-
-    .bc-sep {
-      color: var(--text3)
-    }
-
-    .bc-cur {
-      color: var(--text);
-      font-weight: 600
-    }
-
-    .ts {
-      flex: 1
-    }
-
-    .clock {
-      font-family: var(--ff-cond);
-      font-size: 15px;
-      font-weight: 600;
-      letter-spacing: 1px;
-      color: var(--text2);
-      background: var(--bg3);
-      padding: 5px 14px;
-      border-radius: var(--r-pill);
-      border: 1px solid var(--border)
-    }
-
-    .content {
-      flex: 1;
-      overflow-y: auto;
-      padding: 24px;
-      scrollbar-width: thin;
-      scrollbar-color: var(--scr) transparent
-    }
-
-    .page {
-      display: none
-    }
-
-    .page.active {
-      display: block
-    }
-
-    /* GRID & CARDS */
-    .grid {
-      display: grid;
-      gap: 14px
-    }
-
-    .g2 {
-      grid-template-columns: repeat(2, 1fr)
-    }
-
-    .g3 {
-      grid-template-columns: repeat(3, 1fr)
-    }
-
-    .g4 {
-      grid-template-columns: repeat(4, 1fr)
-    }
-
-    .card {
-      background: var(--bg2);
-      border: 1px solid var(--border);
-      border-radius: var(--r-lg);
-      padding: 20px;
-      transition: background var(--tr), border-color var(--tr), box-shadow var(--tr)
-    }
-
-    .card:hover {
-      box-shadow: var(--shsm)
-    }
-
-    .ch {
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 3px;
-      text-transform: uppercase;
-      color: var(--text3);
-      margin-bottom: 10px
-    }
-
-    .cv {
-      font-family: var(--ff-disp);
-      font-size: 30px;
-      letter-spacing: 1px;
-      color: var(--text);
-      line-height: 1
-    }
-
-    .cu {
-      font-size: 12px;
-      color: var(--text2);
-      margin-top: 5px;
-      font-weight: 500
-    }
-
-    .stitle {
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 4px;
-      text-transform: uppercase;
-      color: var(--text3);
-      margin-bottom: 12px;
-      margin-top: 22px;
-      display: flex;
-      align-items: center;
-      gap: 10px
-    }
-
-    .stitle::after {
-      content: '';
-      flex: 1;
-      height: 1px;
-      background: var(--border);
-      border-radius: 99px
-    }
-
-    /* BUTTONS */
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      padding: 9px 20px;
-      font-family: var(--ff-ui);
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      border: 1px solid;
-      background: none;
-      border-radius: var(--r-pill);
-      transition: all var(--tr);
-      white-space: nowrap
-    }
-
-    .btn:disabled {
-      opacity: .35;
-      cursor: not-allowed
-    }
-
-    .btn-pri {
-      border-color: var(--border2);
-      color: var(--text);
-      background: var(--bg3)
-    }
-
-    .btn-pri:hover:not(:disabled) {
-      background: var(--ahov);
-      border-color: var(--text3)
-    }
-
-    .btn-sol {
-      border-color: var(--text);
-      background: var(--text);
-      color: var(--bg)
-    }
-
-    .btn-sol:hover:not(:disabled) {
-      opacity: .85
-    }
-
-    .btn-dan {
-      border-color: var(--red);
-      color: var(--red);
-      background: var(--rbg)
-    }
-
-    .btn-dan:hover:not(:disabled) {
-      background: rgba(224, 92, 92, .2)
-    }
-
-    .btn-suc {
-      border-color: var(--green);
-      color: var(--green);
-      background: var(--gbg)
-    }
-
-    .btn-suc:hover:not(:disabled) {
-      background: rgba(109, 219, 138, .2)
-    }
-
-    .btn-wrn {
-      border-color: var(--amber);
-      color: var(--amber);
-      background: var(--abg)
-    }
-
-    .btn-wrn:hover:not(:disabled) {
-      background: rgba(212, 168, 75, .2)
-    }
-
-    .btn-sm {
-      padding: 6px 14px;
-      font-size: 12px
-    }
-
-    .btn-xs {
-      padding: 4px 10px;
-      font-size: 11px
-    }
-
-    /* LOGS */
-    .ltbar {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 12px;
-      flex-wrap: wrap
-    }
-
-    #lc {
-      background: var(--bg2);
-      border: 1px solid var(--border);
-      border-radius: var(--r-lg);
-      height: calc(100vh - 220px);
-      overflow-y: auto;
-      padding: 14px;
-      font-family: 'Courier New', monospace;
-      font-size: 12px;
-      line-height: 1.8;
-      scrollbar-width: thin;
-      scrollbar-color: var(--scr) transparent
-    }
-
-    .le {
-      display: flex;
-      gap: 10px;
-      padding: 1px 0;
-      border-radius: 4px
-    }
-
-    .le:hover {
-      background: var(--adim)
-    }
-
-    .lts {
-      color: var(--text3);
-      flex-shrink: 0;
-      font-size: 11px
-    }
-
-    .llv {
-      flex-shrink: 0;
-      width: 58px;
-      font-weight: 700
-    }
-
-    .lbd {
-      color: var(--text);
-      word-break: break-all;
-      flex: 1
-    }
-
-    .lI .llv {
-      color: var(--green)
-    }
-
-    .lW .llv {
-      color: var(--amber)
-    }
-
-    .lE .llv {
-      color: var(--red)
-    }
-
-    .lD .llv {
-      color: var(--blue)
-    }
-
-    .lV .llv {
-      color: var(--text3)
-    }
-
-    .lempty {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 200px;
-      color: var(--text3);
-      gap: 10px;
-      font-size: 13px
-    }
-
-    /* WIFI */
-    .wsgrid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 10px;
-      margin-bottom: 16px
-    }
-
-    .wsc {
-      background: var(--bg3);
-      border: 1px solid var(--border);
-      border-radius: var(--r-md);
-      padding: 12px 14px
-    }
-
-    .wsl {
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 2px;
-      text-transform: uppercase;
-      color: var(--text3);
-      margin-bottom: 5px
-    }
-
-    .wsv {
-      font-size: 15px;
-      font-weight: 600;
-      color: var(--text)
-    }
-
-    .wsv.ok {
-      color: var(--green)
-    }
-
-    .wsv.bad {
-      color: var(--red)
-    }
-
-    .tw {
-      border-radius: var(--r-lg);
-      border: 1px solid var(--border);
-      overflow: hidden
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 13px
-    }
-
-    thead th {
-      text-align: left;
-      padding: 11px 14px;
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 2px;
-      text-transform: uppercase;
-      color: var(--text3);
-      background: var(--bg3);
-      border-bottom: 1px solid var(--border)
-    }
-
-    tbody tr {
-      border-bottom: 1px solid var(--border);
-      transition: background var(--tr)
-    }
-
-    tbody tr:last-child {
-      border-bottom: none
-    }
-
-    tbody tr:hover {
-      background: var(--adim)
-    }
-
-    tbody td {
-      padding: 10px 14px;
-      vertical-align: middle
-    }
-
-    .rar td:first-child {
-      border-left: 3px solid var(--green)
-    }
-
-    /* FORMS */
-    .fg {
-      margin-bottom: 16px
-    }
-
-    .fl {
-      display: block;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 2px;
-      text-transform: uppercase;
-      color: var(--text2);
-      margin-bottom: 7px
-    }
-
-    input[type=text],
-    input[type=password],
-    input[type=number],
-    select,
-    textarea {
-      width: 100%;
-      background: var(--bg3);
-      border: 1px solid var(--border);
-      border-radius: var(--r-md);
-      color: var(--text);
-      padding: 10px 14px;
-      font-family: var(--ff-ui);
-      font-size: 14px;
-      outline: none;
-      transition: border-color var(--tr), box-shadow var(--tr), background var(--tr);
-      -webkit-appearance: none;
-      appearance: none
-    }
-
-    input:focus,
-    select:focus,
-    textarea:focus {
-      border-color: var(--text3);
-      box-shadow: var(--glow)
-    }
-
-    input::placeholder {
-      color: var(--text3)
-    }
-
-    select option {
-      background: var(--bg2);
-      color: var(--text)
-    }
-
-    input[type=range] {
-      width: 100%;
-      accent-color: var(--text);
-      cursor: pointer;
-      height: 4px
-    }
-
-    input[type=color] {
-      width: 44px;
-      height: 36px;
-      border: 1px solid var(--border);
-      border-radius: var(--r-sm);
-      background: none;
-      cursor: pointer;
-      padding: 3px
-    }
-
-    .cr {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap
-    }
-
-    .chx {
-      font-family: 'Courier New', monospace;
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--text2);
-      background: var(--bg3);
-      border: 1px solid var(--border);
-      border-radius: var(--r-sm);
-      padding: 4px 10px;
-      width: 88px;
-      text-align: center
-    }
-
-    .crg {
-      display: flex;
-      gap: 6px
-    }
-
-    .crg input {
-      width: 64px;
-      text-align: center
-    }
-
-    .trow {
-      display: flex;
-      align-items: center;
-      gap: 12px
-    }
-
-    .tw2 {
-      position: relative;
-      width: 44px;
-      height: 24px;
-      flex-shrink: 0
-    }
-
-    .tw2 input {
-      display: none
-    }
-
-    .ttr {
-      position: absolute;
-      inset: 0;
-      background: var(--bg4);
-      border: 1px solid var(--border2);
-      border-radius: 99px;
-      cursor: pointer;
-      transition: all var(--tr)
-    }
-
-    .tth {
-      position: absolute;
-      left: 3px;
-      top: 3px;
-      width: 16px;
-      height: 16px;
-      border-radius: 50%;
-      background: var(--text3);
-      transition: all var(--tr);
-      pointer-events: none
-    }
-
-    .tw2 input:checked~.ttr {
-      background: var(--text);
-      border-color: var(--text)
-    }
-
-    .tw2 input:checked~.tth {
-      transform: translateX(20px);
-      background: var(--bg)
-    }
-
-    .tdsc {
-      font-size: 13px;
-      color: var(--text2)
-    }
-
-    /* OTA */
-    .uz {
-      border: 2px dashed var(--border);
-      border-radius: var(--r-lg);
-      padding: 36px 24px;
-      text-align: center;
-      cursor: pointer;
-      transition: all var(--tr)
-    }
-
-    .uz:hover,
-    .uz.drag-over {
-      border-color: var(--text3);
-      background: var(--adim)
-    }
-
-    .uz input[type=file] {
-      display: none
-    }
-
-    .uicon {
-      font-size: 36px;
-      margin-bottom: 10px;
-      opacity: .4
-    }
-
-    .uhint {
-      font-size: 13px;
-      color: var(--text2);
-      font-weight: 500
-    }
-
-    .uhint span {
-      font-weight: 700;
-      color: var(--text)
-    }
-
-    .uname {
-      margin-top: 10px;
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--green);
-      background: var(--gbg);
-      border-radius: var(--r-pill);
-      padding: 4px 14px;
-      display: inline-block
-    }
-
-    .uname:empty {
-      display: none
-    }
-
-    .pw {
-      display: none;
-      margin-top: 14px
-    }
-
-    .pt {
-      height: 6px;
-      background: var(--bg4);
-      border-radius: 99px;
-      overflow: hidden
-    }
-
-    .pf {
-      height: 100%;
-      background: var(--text);
-      width: 0%;
-      border-radius: 99px;
-      transition: width .2s
-    }
-
-    .plbl {
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--text2);
-      margin-top: 6px;
-      text-align: center
-    }
-
-    /* BADGE */
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 3px 10px;
-      border-radius: var(--r-pill);
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: .5px
-    }
-
-    .bok {
-      background: var(--gbg);
-      color: var(--green)
-    }
-
-    .berr {
-      background: var(--rbg);
-      color: var(--red)
-    }
-
-    .bwrn {
-      background: var(--abg);
-      color: var(--amber)
-    }
-
-    .bnfo {
-      background: var(--adim);
-      color: var(--text2)
-    }
-
-    /* TOAST */
-    #toast {
-      position: fixed;
-      bottom: 24px;
-      right: 24px;
-      padding: 12px 20px;
-      font-size: 13px;
-      font-weight: 600;
-      border: 1px solid;
-      border-radius: var(--r-lg);
-      opacity: 0;
-      transform: translateY(8px) scale(.97);
-      transition: all .22s;
-      z-index: 9999;
-      max-width: 320px;
-      box-shadow: var(--sh)
-    }
-
-    #toast.show {
-      opacity: 1;
-      transform: translateY(0) scale(1)
-    }
-
-    #toast.ok {
-      border-color: var(--green);
-      color: var(--green);
-      background: var(--bg2)
-    }
-
-    #toast.err {
-      border-color: var(--red);
-      color: var(--red);
-      background: var(--bg2)
-    }
-
-    #toast.warn {
-      border-color: var(--amber);
-      color: var(--amber);
-      background: var(--bg2)
-    }
-
-    @media(max-width:960px) {
-      .g4 {
-        grid-template-columns: repeat(2, 1fr)
-      }
-
-      .g3 {
-        grid-template-columns: repeat(2, 1fr)
-      }
-    }
-
-    @media(max-width:700px) {
-      #sidebar {
-        width: 60px;
-        min-width: 60px
-      }
-
-      .nav-label,
-      .brand-text,
-      .sp-lbl,
-      .sp-val,
-      .tgl {
-        display: none
-      }
-
-      .brand {
-        padding: 16px 8px;
-        justify-content: center
-      }
-
-      .nav {
-        padding: 8px 6px
-      }
-
-      .nav-item {
-        justify-content: center;
-        padding: 10px 0
-      }
-
-      .nav-item.active::before {
-        display: none
-      }
-
-      .g2,
-      .g3,
-      .g4 {
-        grid-template-columns: 1fr
-      }
-
-      .content {
-        padding: 14px
-      }
-    }
-  </style>
-</head>
-
-<body>
-  <div id="app">
-
-    <nav id="sidebar">
-      <div class="brand">
-        <div class="brand-icon">
-          <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <line x1="24" y1="7" x2="15" y2="2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"
-              opacity=".55" />
-            <line x1="24" y1="7" x2="11" y2="6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"
-              opacity=".4" />
-            <line x1="24" y1="7" x2="33" y2="2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"
-              opacity=".55" />
-            <line x1="24" y1="7" x2="37" y2="6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"
-              opacity=".4" />
-            <path d="M19.5 11 Q24 6 28.5 11 L27 13 H21 Z" fill="currentColor" opacity=".9" />
-            <rect x="20" y="13" width="8" height="3" rx="1" fill="currentColor" opacity=".55" />
-            <path d="M21 16 L20 37 H28 L27 16 Z" fill="currentColor" opacity=".82" />
-            <rect x="22.5" y="21" width="3" height="4" rx=".6" fill="var(--bg2)" opacity=".9" />
-            <path d="M18 37 H30 L31.5 40 H16.5 Z" fill="currentColor" opacity=".7" />
-            <path d="M10 29 Q14 13 24 13 Q34 13 38 29" stroke="currentColor" stroke-width="1.6" fill="none"
-              stroke-linecap="round" opacity=".55" />
-            <path d="M10 29 Q14 45 24 45 Q34 45 38 29" stroke="currentColor" stroke-width="1.6" fill="none"
-              stroke-linecap="round" opacity=".55" />
-            <line x1="24" y1="44" x2="17" y2="47" stroke="currentColor" stroke-width="1" stroke-linecap="round"
-              opacity=".22" />
-            <line x1="24" y1="44" x2="31" y2="47" stroke="currentColor" stroke-width="1" stroke-linecap="round"
-              opacity=".22" />
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1.0,maximum-scale=1.0"
+    />
+    <title>WATCH TOWER</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow:wght@300;400;500;600&family=Share+Tech+Mono&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header id="hdr">
+      <div class="hdr-brand">
+        <img
+          class="hdr-logo"
+          src="data:image/png;base64,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"
+          alt="Watch Tower"
+        />
+        <div class="hdr-wordmark">
+          <span class="wm-a">WATCH</span><span class="wm-b">TOWER</span>
+        </div>
+      </div>
+      <nav class="hdr-nav">
+        <button
+          class="nb active"
+          data-page="dashboard"
+          onclick="showPage('dashboard')"
+        >
+          <svg viewBox="0 0 20 20">
+            <rect x="2" y="2" width="7" height="7" rx="1.5" />
+            <rect x="11" y="2" width="7" height="7" rx="1.5" />
+            <rect x="2" y="11" width="7" height="7" rx="1.5" />
+            <rect x="11" y="11" width="7" height="7" rx="1.5" />
           </svg>
+          <span>Dashboard</span>
+        </button>
+        <button class="nb" data-page="settings" onclick="showPage('settings')">
+          <svg viewBox="0 0 20 20">
+            <circle cx="10" cy="10" r="3" />
+            <path
+              d="M10 2v2M10 16v2M2 10h2M16 10h2M4.1 4.1l1.4 1.4M14.5 14.5l1.4 1.4M4.1 15.9l1.4-1.4M14.5 5.5l1.4-1.4"
+            />
+          </svg>
+          <span>Settings</span>
+        </button>
+      </nav>
+      <div class="hdr-right">
+        <div class="wbadge" id="wbadge">
+          <span class="wdot" id="wdot"></span>
+          <span id="wifi-label">Offline</span>
         </div>
-        <div>
-          <div class="brand-name">WATCHTOWER</div>
-          <div class="brand-sub">Device Console</div>
-        </div>
+        <button class="icn-btn" onclick="toggleTheme()" title="Toggle theme">
+          <svg class="sun-ic" viewBox="0 0 20 20">
+            <circle cx="10" cy="10" r="4" />
+            <path
+              d="M10 2v2M10 16v2M2 10h2M16 10h2M4.1 4.1l1.4 1.4M14.5 14.5l1.4 1.4M4.1 15.9l1.4-1.4M14.5 5.5l1.4-1.4"
+            />
+          </svg>
+          <svg class="moon-ic" viewBox="0 0 20 20">
+            <path d="M17 12A7 7 0 0 1 8 3 7 7 0 0 0 10 17a7 7 0 0 0 7-5z" />
+          </svg>
+        </button>
+        <button class="icn-btn" onclick="doRefresh()" title="Refresh data">
+          <svg viewBox="0 0 20 20">
+            <path
+              d="M14.5 5.5A6 6 0 1 0 16 10"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+            />
+            <polyline
+              points="14,2 14,6 18,6"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+            />
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- DASHBOARD -->
+      <div class="page active" id="pg-dashboard">
+        <section class="disp-section">
+          <div class="sec-hdr">
+            <span class="sec-lbl">LIVE DISPLAY</span>
+            <span class="live-pip">&#9679;</span>
+            <span id="live-time" class="mono sec-ts">--:--:--</span>
+          </div>
+          <div class="disp-card">
+            <div class="disp-bezel">
+              <canvas id="vd-canvas" width="500" height="110"></canvas>
+              <div class="scanlines"></div>
+            </div>
+            <div class="disp-meta">
+              <span id="dinfo-fmt">24H</span>
+              <span class="dm-sep">&#183;</span>
+              <span id="dinfo-blink">BLINK ON</span>
+              <span class="dm-sep">&#183;</span>
+              <span id="dinfo-brt">BRT 80%</span>
+              <span class="dm-sep">&#183;</span>
+              <span id="dinfo-color">&#9679; #00C8FF</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="stat-grid">
+          <div class="scard">
+            <span class="sc-ic">&#9201;</span>
+            <div>
+              <div class="sc-v mono" id="d-uptime">&#8212;</div>
+              <div class="sc-l">UPTIME</div>
+            </div>
+          </div>
+          <div class="scard">
+            <span class="sc-ic">&#128190;</span>
+            <div>
+              <div class="sc-v mono" id="d-heap">&#8212;</div>
+              <div class="sc-l">FREE HEAP</div>
+            </div>
+          </div>
+          <div class="scard">
+            <span class="sc-ic">&#128225;</span>
+            <div>
+              <div class="sc-v mono" id="d-rssi">&#8212;</div>
+              <div class="sc-l">WIFI RSSI</div>
+            </div>
+          </div>
+          <div class="scard">
+            <span class="sc-ic">&#127760;</span>
+            <div>
+              <div class="sc-v mono" id="d-ip">&#8212;</div>
+              <div class="sc-l">IP ADDRESS</div>
+            </div>
+          </div>
+          <div class="scard">
+            <span class="sc-ic">&#127777;</span>
+            <div>
+              <div class="sc-v mono" id="d-temp">&#8212;</div>
+              <div class="sc-l">MCU TEMP</div>
+            </div>
+          </div>
+          <div class="scard">
+            <span class="sc-ic">&#128230;</span>
+            <div>
+              <div class="sc-v mono" id="d-fw">&#8212;</div>
+              <div class="sc-l">FIRMWARE</div>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <div class="sec-hdr">
+            <span class="sec-lbl">RECENT LOGS</span
+            ><span class="live-pip">&#9679;</span>
+          </div>
+          <div class="log-mini" id="dash-logs"></div>
+        </section>
       </div>
 
-      <div class="nav">
-        <div class="nav-sec">Main</div>
-        <div class="nav-item active" onclick="showPage('dashboard')">
-          <div class="nav-icon">⊞</div><span class="nav-label">Dashboard</span>
-        </div>
-        <div class="nav-item" onclick="showPage('logs')">
-          <div class="nav-icon">≡</div><span class="nav-label">Logs</span>
-        </div>
-        <div class="nav-sec">Network</div>
-        <div class="nav-item" onclick="showPage('wifi')">
-          <div class="nav-icon">◎</div><span class="nav-label">WiFi</span>
-        </div>
-        <div class="nav-sec">Device</div>
-        <div class="nav-item" onclick="showPage('settings')">
-          <div class="nav-icon">⊛</div><span class="nav-label">Settings</span>
-        </div>
-        <div class="nav-item" onclick="showPage('ota')">
-          <div class="nav-icon">↑</div><span class="nav-label">OTA Update</span>
-        </div>
-      </div>
+      <!-- SETTINGS -->
+      <div class="page" id="pg-settings">
+        <div class="set-wrap">
+          <nav class="set-nav" id="set-nav">
+            <button class="snb active" data-s="sys" onclick="showSec('sys')">
+              <svg viewBox="0 0 20 20">
+                <rect x="2" y="4" width="16" height="3" rx="1.5" />
+                <rect x="2" y="9" width="16" height="3" rx="1.5" />
+                <rect x="2" y="14" width="10" height="3" rx="1.5" /></svg
+              ><span>System</span>
+            </button>
+            <button class="snb" data-s="fw" onclick="showSec('fw')">
+              <svg viewBox="0 0 20 20">
+                <path
+                  d="M12 2H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V8z"
+                />
+                <polyline points="14,2 14,8 20,8" /></svg
+              ><span>Firmware</span>
+            </button>
+            <button class="snb" data-s="logs" onclick="showSec('logs')">
+              <svg viewBox="0 0 20 20">
+                <rect x="3" y="2" width="14" height="16" rx="2" />
+                <line x1="6" y1="7" x2="14" y2="7" />
+                <line x1="6" y1="10" x2="14" y2="10" />
+                <line x1="6" y1="13" x2="11" y2="13" /></svg
+              ><span>Logs</span>
+            </button>
+            <button class="snb" data-s="display" onclick="showSec('display')">
+              <svg viewBox="0 0 20 20">
+                <rect x="1" y="3" width="18" height="12" rx="2" />
+                <line x1="7" y1="18" x2="13" y2="18" />
+                <line x1="10" y1="15" x2="10" y2="18" /></svg
+              ><span>Display</span>
+            </button>
+            <button class="snb" data-s="clock" onclick="showSec('clock')">
+              <svg viewBox="0 0 20 20">
+                <circle cx="10" cy="10" r="8" />
+                <polyline points="10,5 10,10 13,13" /></svg
+              ><span>Clock</span>
+            </button>
+            <button class="snb" data-s="power" onclick="showSec('power')">
+              <svg viewBox="0 0 20 20"><path d="M11 2v7h5L9 18v-7H4z" /></svg
+              ><span>Power</span>
+            </button>
+            <button class="snb" data-s="wifi" onclick="showSec('wifi')">
+              <svg viewBox="0 0 20 20">
+                <path d="M2 8Q10 1 18 8" />
+                <path d="M5 11.5Q10 7 15 11.5" />
+                <path d="M8 15Q10 13 12 15" />
+                <circle cx="10" cy="17.5" r="1.5" /></svg
+              ><span>WiFi</span>
+            </button>
+          </nav>
 
-      <div class="sf">
-        <div class="sp">
-          <div class="sd sd-gr" id="d-ap"></div><span class="sp-lbl">AP</span><span class="sp-val" id="sb-ap">—</span>
-        </div>
-        <div class="sp">
-          <div class="sd sd-r" id="d-sta"></div><span class="sp-lbl">STA</span><span class="sp-val" id="sb-sta">—</span>
-        </div>
-        <div class="tgw">
-          <span class="tgl">Theme</span>
-          <button class="tgb" onclick="toggleTheme()"><span id="ticon">☀</span><span id="tlbl">Light</span></button>
-        </div>
-      </div>
-    </nav>
-
-    <div id="main">
-      <div class="topbar">
-        <div class="bc">
-          <span class="bc-root">WatchTower</span>
-          <span class="bc-sep">›</span>
-          <span class="bc-cur" id="ptitle">Dashboard</span>
-        </div>
-        <div class="ts"></div>
-        <div class="clock" id="clk">--:--:--</div>
-      </div>
-
-      <div class="content">
-
-        <!-- DASHBOARD -->
-        <div class="page active" id="page-dashboard">
-          <div class="stitle" style="margin-top:0">System Overview</div>
-          <div class="grid g4">
-            <div class="card">
-              <div class="ch">Free Heap</div>
-              <div class="cv" id="s-heap">—</div>
-              <div class="cu">bytes available</div>
-            </div>
-            <div class="card">
-              <div class="ch">Min Heap</div>
-              <div class="cv" id="s-mheap">—</div>
-              <div class="cu">lowest recorded</div>
-            </div>
-            <div class="card">
-              <div class="ch">Uptime</div>
-              <div class="cv" id="s-uptime">—</div>
-              <div class="cu">seconds running</div>
-            </div>
-            <div class="card">
-              <div class="ch">Flash Size</div>
-              <div class="cv" id="s-flash">—</div>
-              <div class="cu">KB total flash</div>
-            </div>
-          </div>
-          <div class="grid g3" style="margin-top:14px">
-            <div class="card">
-              <div class="ch">Chip</div>
-              <div class="cv" id="s-chip" style="font-size:22px">—</div>
-              <div class="cu" id="s-cores">—</div>
-            </div>
-            <div class="card">
-              <div class="ch">IDF Version</div>
-              <div class="cv" id="s-idf" style="font-size:18px">—</div>
-              <div class="cu">ESP-IDF framework</div>
-            </div>
-            <div class="card">
-              <div class="ch">Running Partition</div>
-              <div class="cv" id="s-part" style="font-size:20px">—</div>
-              <div class="cu">OTA slot</div>
-            </div>
-          </div>
-          <div class="stitle">Network</div>
-          <div class="grid g3">
-            <div class="card">
-              <div class="ch">WiFi RSSI</div>
-              <div class="cv" id="s-rssi">—</div>
-              <div class="cu">signal strength (dBm)</div>
-            </div>
-            <div class="card">
-              <div class="ch">STA IP Address</div>
-              <div class="cv" id="s-ip" style="font-size:18px">—</div>
-              <div class="cu">station interface</div>
-            </div>
-            <div class="card">
-              <div class="ch">AP Clients</div>
-              <div class="cv" id="s-apc">—</div>
-              <div class="cu">connected devices</div>
-            </div>
-          </div>
-          <div class="stitle">Quick Actions</div>
-          <div style="display:flex;gap:10px;flex-wrap:wrap">
-            <button class="btn btn-wrn" onclick="doReboot()">↺ Reboot Device</button>
-            <button class="btn btn-pri" onclick="showPage('ota')">↑ OTA Update</button>
-            <button class="btn btn-pri" onclick="showPage('settings')">⊛ Settings</button>
-            <button class="btn btn-pri" onclick="showPage('wifi')">◎ WiFi Manager</button>
-          </div>
-        </div>
-
-        <!-- LOGS -->
-        <div class="page" id="page-logs">
-          <div class="ltbar">
-            <button class="btn btn-pri btn-sm" id="asb" onclick="toggleAS()">▼ Auto-scroll</button>
-            <button class="btn btn-pri btn-sm" onclick="clearLogs()">⊘ Clear</button>
-            <select id="lf" style="width:auto;padding:7px 12px;font-size:12px;border-radius:99px"
-              onchange="renderLogs()">
-              <option value="">All Levels</option>
-              <option value="INFO">INFO</option>
-              <option value="WARN">WARN</option>
-              <option value="ERROR">ERROR</option>
-              <option value="DEBUG">DEBUG</option>
-              <option value="VERBOSE">VERBOSE</option>
-            </select>
-            <div style="flex:1"></div>
-            <span class="badge bnfo">seq <span id="lseq">0</span></span>
-            <span class="badge bnfo" id="lcnt">0 entries</span>
-          </div>
-          <div id="lc">
-            <div class="lempty" id="lemp">
-              <div style="font-size:36px;opacity:.3">🏮</div>
-              <div>Waiting for log entries…</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- WIFI -->
-        <div class="page" id="page-wifi">
-          <div class="stitle" style="margin-top:0">Connection Status</div>
-          <div class="wsgrid">
-            <div class="wsc">
-              <div class="wsl">Station</div>
-              <div class="wsv" id="w-sta">—</div>
-            </div>
-            <div class="wsc">
-              <div class="wsl">SSID</div>
-              <div class="wsv" id="w-ssid">—</div>
-            </div>
-            <div class="wsc">
-              <div class="wsl">IP Address</div>
-              <div class="wsv" id="w-ip">—</div>
-            </div>
-            <div class="wsc">
-              <div class="wsl">Signal (RSSI)</div>
-              <div class="wsv" id="w-rssi">—</div>
-            </div>
-            <div class="wsc">
-              <div class="wsl">Access Point</div>
-              <div class="wsv" id="w-ap">—</div>
-            </div>
-            <div class="wsc">
-              <div class="wsl">AP Clients</div>
-              <div class="wsv" id="w-apc">—</div>
-            </div>
-          </div>
-          <div class="stitle">Saved Profiles</div>
-          <div class="tw">
-            <table>
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>SSID</th>
-                  <th>Security</th>
-                  <th>Status</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody id="ptbody">
-                <tr>
-                  <td colspan="5" style="text-align:center;padding:20px;color:var(--text3)">Loading…</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="stitle">Add New Profile</div>
-          <div class="card">
-            <div class="grid g2" style="gap:14px">
-              <div class="fg" style="margin:0"><label class="fl">Network SSID</label><input type="text" id="new-ssid"
-                  placeholder="Enter network name"></div>
-              <div class="fg" style="margin:0"><label class="fl">Password</label><input type="password" id="new-pass"
-                  placeholder="Leave blank for open network"></div>
-            </div>
-            <div style="margin-top:16px"><button class="btn btn-sol" onclick="addProfile()">+ Add Profile</button></div>
-          </div>
-        </div>
-
-        <!-- SETTINGS -->
-        <div class="page" id="page-settings">
-          <div class="grid g2" style="gap:18px;align-items:start">
-            <div style="display:flex;flex-direction:column;gap:14px">
-              <div class="card">
-                <div class="ch">Segment Colors</div>
-                <div class="fg">
-                  <label class="fl">ON Color</label>
-                  <div class="cr">
-                    <input type="color" id="col-on" value="#00ffff" oninput="syncColor('on')">
-                    <span class="chx" id="col-on-hex">#00FFFF</span>
-                    <div class="crg">
-                      <input type="number" min="0" max="255" id="col-on-r" placeholder="R"
-                        oninput="syncColorFromRGB('on')">
-                      <input type="number" min="0" max="255" id="col-on-g" placeholder="G"
-                        oninput="syncColorFromRGB('on')">
-                      <input type="number" min="0" max="255" id="col-on-b" placeholder="B"
-                        oninput="syncColorFromRGB('on')">
-                    </div>
+          <div class="set-body">
+            <!-- SYSTEM -->
+            <div class="spane active" id="sec-sys">
+              <h2>System Status</h2>
+              <div class="rbar-grid">
+                <div class="rcard">
+                  <div class="rrow">
+                    <span>CPU</span><span class="mono" id="cpu-pct">0%</span>
+                  </div>
+                  <div class="rtrack">
+                    <div class="rfill cpu" id="cpu-bar"></div>
                   </div>
                 </div>
-                <div class="fg" style="margin:0">
-                  <label class="fl">OFF Color</label>
-                  <div class="cr">
-                    <input type="color" id="col-off" value="#000000" oninput="syncColor('off')">
-                    <span class="chx" id="col-off-hex">#000000</span>
-                    <div class="crg">
-                      <input type="number" min="0" max="255" id="col-off-r" placeholder="R"
-                        oninput="syncColorFromRGB('off')">
-                      <input type="number" min="0" max="255" id="col-off-g" placeholder="G"
-                        oninput="syncColorFromRGB('off')">
-                      <input type="number" min="0" max="255" id="col-off-b" placeholder="B"
-                        oninput="syncColorFromRGB('off')">
-                    </div>
+                <div class="rcard">
+                  <div class="rrow">
+                    <span>RAM</span><span class="mono" id="ram-pct">0%</span>
+                  </div>
+                  <div class="rtrack">
+                    <div class="rfill ram" id="ram-bar"></div>
+                  </div>
+                </div>
+                <div class="rcard">
+                  <div class="rrow">
+                    <span>Flash</span
+                    ><span class="mono" id="flash-pct">0%</span>
+                  </div>
+                  <div class="rtrack">
+                    <div class="rfill fla" id="flash-bar"></div>
+                  </div>
+                </div>
+                <div class="rcard">
+                  <div class="rrow">
+                    <span>SPIFFS</span
+                    ><span class="mono" id="spiffs-pct">0%</span>
+                  </div>
+                  <div class="rtrack">
+                    <div class="rfill spi" id="spiffs-bar"></div>
                   </div>
                 </div>
               </div>
-              <div class="card">
-                <div class="ch">Brightness &amp; Animation</div>
+              <table class="itbl">
+                <tr>
+                  <td>Chip Model</td>
+                  <td class="mono" id="i-chip">&#8212;</td>
+                </tr>
+                <tr>
+                  <td>CPU Cores</td>
+                  <td class="mono" id="i-cores">&#8212;</td>
+                </tr>
+                <tr>
+                  <td>CPU Frequency</td>
+                  <td class="mono" id="i-freq">&#8212;</td>
+                </tr>
+                <tr>
+                  <td>Flash Size</td>
+                  <td class="mono" id="i-flash">&#8212;</td>
+                </tr>
+                <tr>
+                  <td>Free Heap</td>
+                  <td class="mono" id="i-heap">&#8212;</td>
+                </tr>
+                <tr>
+                  <td>Min Free Heap</td>
+                  <td class="mono" id="i-minheap">&#8212;</td>
+                </tr>
+                <tr>
+                  <td>Uptime</td>
+                  <td class="mono" id="i-uptime">&#8212;</td>
+                </tr>
+                <tr>
+                  <td>Temperature</td>
+                  <td class="mono" id="i-temp">&#8212;</td>
+                </tr>
+                <tr>
+                  <td>Reset Reason</td>
+                  <td class="mono" id="i-reset">&#8212;</td>
+                </tr>
+              </table>
+            </div>
+
+            <!-- FIRMWARE -->
+            <div class="spane" id="sec-fw">
+              <h2>Firmware &amp; OTA</h2>
+              <table class="itbl" style="margin-bottom: 18px">
+                <tr>
+                  <td>Version</td>
+                  <td class="mono" id="fw-ver">&#8212;</td>
+                </tr>
+                <tr>
+                  <td>Build Date</td>
+                  <td class="mono" id="fw-date">&#8212;</td>
+                </tr>
+                <tr>
+                  <td>IDF Version</td>
+                  <td class="mono" id="fw-idf">&#8212;</td>
+                </tr>
+                <tr>
+                  <td>Active Slot</td>
+                  <td class="mono" id="fw-slot">&#8212;</td>
+                </tr>
+                <tr>
+                  <td>App0 State</td>
+                  <td class="mono" id="fw-app0">&#8212;</td>
+                </tr>
+                <tr>
+                  <td>App1 State</td>
+                  <td class="mono" id="fw-app1">&#8212;</td>
+                </tr>
+                <tr>
+                  <td>SPIFFS Used</td>
+                  <td class="mono" id="fw-spiffs">&#8212;</td>
+                </tr>
+              </table>
+              <div class="ucard">
+                <div class="uc-title">&#128260; Firmware Update (.bin)</div>
+                <div
+                  class="dz"
+                  id="fw-dz"
+                  onclick="document.getElementById('fw-inp').click()"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="28"
+                    height="28"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                  >
+                    <polyline points="16,16 12,12 8,16" />
+                    <line x1="12" y1="12" x2="12" y2="21" />
+                    <path d="M20.4 15.6A9 9 0 1 0 3.6 15.6" />
+                  </svg>
+                  <span>Drop <code>.bin</code> or click to browse</span>
+                  <input
+                    type="file"
+                    id="fw-inp"
+                    accept=".bin"
+                    hidden
+                    onchange="uploadFW(this.files[0])"
+                  />
+                </div>
+                <div class="prog hidden" id="fw-prog">
+                  <div class="pb"><div class="pf" id="fw-fill"></div></div>
+                  <span class="mono" id="fw-pct">0%</span>
+                </div>
+                <p class="uc-warn">&#9888; Device restarts after update</p>
+              </div>
+              <div class="ucard">
+                <div class="uc-title">&#127760; Web App Update</div>
+                <div
+                  class="dz"
+                  id="wa-dz"
+                  onclick="document.getElementById('wa-inp').click()"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="28"
+                    height="28"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                  >
+                    <polyline points="16,16 12,12 8,16" />
+                    <line x1="12" y1="12" x2="12" y2="21" />
+                    <path d="M20.4 15.6A9 9 0 1 0 3.6 15.6" />
+                  </svg>
+                  <span
+                    >Drop <code>.html / .css / .js</code> or click to
+                    browse</span
+                  >
+                  <input
+                    type="file"
+                    id="wa-inp"
+                    accept=".html,.css,.js,.bin"
+                    hidden
+                    onchange="uploadWA(this.files[0])"
+                  />
+                </div>
+                <div class="prog hidden" id="wa-prog">
+                  <div class="pb"><div class="pf" id="wa-fill"></div></div>
+                  <span class="mono" id="wa-pct">0%</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- LOGS -->
+            <div class="spane" id="sec-logs">
+              <h2>System Logs <span class="live-pip">&#9679;</span></h2>
+              <div class="log-tb">
+                <div class="lf-row">
+                  <button
+                    class="lfb active"
+                    data-lv="ALL"
+                    onclick="setLogFilter('ALL')"
+                  >
+                    ALL
+                  </button>
+                  <button
+                    class="lfb"
+                    data-lv="ERROR"
+                    onclick="setLogFilter('ERROR')"
+                  >
+                    ERR
+                  </button>
+                  <button
+                    class="lfb"
+                    data-lv="WARN"
+                    onclick="setLogFilter('WARN')"
+                  >
+                    WRN
+                  </button>
+                  <button
+                    class="lfb"
+                    data-lv="INFO"
+                    onclick="setLogFilter('INFO')"
+                  >
+                    INF
+                  </button>
+                  <button
+                    class="lfb"
+                    data-lv="DEBUG"
+                    onclick="setLogFilter('DEBUG')"
+                  >
+                    DBG
+                  </button>
+                </div>
+                <div class="la-row">
+                  <label class="swl"
+                    ><input type="checkbox" id="log-as" checked /><span
+                      class="swt"
+                      ><span class="swk"></span></span
+                    ><span>Auto-scroll</span></label
+                  >
+                  <button class="bsm" onclick="clearLogs()">Clear</button>
+                  <button class="bsm" onclick="exportLogs()">
+                    &#8595; Export
+                  </button>
+                </div>
+              </div>
+              <div class="log-viewer" id="log-viewer"></div>
+              <div class="log-ft">
+                <span id="log-count">0 entries</span
+                ><span id="log-ts">&#8212;</span>
+              </div>
+            </div>
+
+            <!-- DISPLAY -->
+            <div class="spane" id="sec-display">
+              <h2>Display Settings</h2>
+              <div class="dp-layout">
+                <div class="dp-ctrls">
+                  <div class="fg">
+                    <label>Display Color</label>
+                    <div class="clr-row">
+                      <input
+                        type="color"
+                        id="dp-color"
+                        value="#00c8ff"
+                        oninput="onDispChange()"
+                      />
+                      <div class="swatches">
+                        <div
+                          class="sw"
+                          style="background: #00c8ff"
+                          onclick="pickColor('#00c8ff')"
+                        ></div>
+                        <div
+                          class="sw"
+                          style="background: #00ff99"
+                          onclick="pickColor('#00ff99')"
+                        ></div>
+                        <div
+                          class="sw"
+                          style="background: #ff8c00"
+                          onclick="pickColor('#ff8c00')"
+                        ></div>
+                        <div
+                          class="sw"
+                          style="background: #ffffff"
+                          onclick="pickColor('#ffffff')"
+                        ></div>
+                        <div
+                          class="sw"
+                          style="background: #ff3860"
+                          onclick="pickColor('#ff3860')"
+                        ></div>
+                        <div
+                          class="sw"
+                          style="background: #ffdd57"
+                          onclick="pickColor('#ffdd57')"
+                        ></div>
+                        <div
+                          class="sw"
+                          style="background: #b48eff"
+                          onclick="pickColor('#b48eff')"
+                        ></div>
+                        <div
+                          class="sw"
+                          style="background: #c0c0c0"
+                          onclick="pickColor('#c0c0c0')"
+                        ></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="fg">
+                    <label
+                      >Brightness
+                      <span class="pill" id="brt-val">80%</span></label
+                    >
+                    <input
+                      type="range"
+                      class="slider"
+                      id="dp-brt"
+                      min="0"
+                      max="100"
+                      value="80"
+                      oninput="
+                        document.getElementById('brt-val').textContent =
+                          this.value + '%';
+                        onDispChange();
+                      "
+                    />
+                  </div>
+                  <div class="fg">
+                    <label>Effects</label>
+                    <div class="swl-list">
+                      <label class="swl"
+                        ><input
+                          type="checkbox"
+                          id="dp-blink"
+                          checked
+                          onchange="onDispChange()"
+                        /><span class="swt"><span class="swk"></span></span
+                        ><span>Colon Blink</span></label
+                      >
+                      <label class="swl"
+                        ><input
+                          type="checkbox"
+                          id="dp-scroll"
+                          onchange="onDispChange()"
+                        /><span class="swt"><span class="swk"></span></span
+                        ><span>Scroll Effect</span></label
+                      >
+                      <label class="swl"
+                        ><input
+                          type="checkbox"
+                          id="dp-pulse"
+                          onchange="onDispChange()"
+                        /><span class="swt"><span class="swk"></span></span
+                        ><span>Pulse Glow</span></label
+                      >
+                      <label class="swl"
+                        ><input
+                          type="checkbox"
+                          id="dp-trans"
+                          checked
+                          onchange="onDispChange()"
+                        /><span class="swt"><span class="swk"></span></span
+                        ><span>Digit Transitions</span></label
+                      >
+                    </div>
+                  </div>
+                  <div class="fg">
+                    <label>Reaction</label>
+                    <select id="dp-react" onchange="onDispChange()">
+                      <option value="none">None</option>
+                      <option value="flash">Flash on Hour</option>
+                      <option value="sweep">Color Sweep</option>
+                      <option value="rainbow">Rainbow Cycle</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="dp-prev">
+                  <div class="prev-lbl">LIVE PREVIEW</div>
+                  <div class="prev-frame">
+                    <canvas id="prev-canvas" width="300" height="76"></canvas>
+                    <div class="scanlines"></div>
+                  </div>
+                  <p class="prev-hint">Changes auto-save to device instantly</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- CLOCK -->
+            <div class="spane" id="sec-clock">
+              <h2>Clock &amp; Time</h2>
+              <div class="ctrl-grid">
                 <div class="fg">
-                  <label class="fl">Master Brightness — <span id="iv">200</span> / 255</label>
-                  <input type="range" min="0" max="255" value="200" id="intensity"
-                    oninput="document.getElementById('iv').textContent=this.value;drawPreview()">
+                  <label>Time Format</label>
+                  <div class="seg">
+                    <button class="sgb active" id="fmt-24" onclick="setFmt(24)">
+                      24-Hour</button
+                    ><button class="sgb" id="fmt-12" onclick="setFmt(12)">
+                      12-Hour AM/PM
+                    </button>
+                  </div>
                 </div>
                 <div class="fg">
-                  <label class="fl">Animation Mode</label>
-                  <select id="anim-sel">
-                    <option value="0">Solid — Static color</option>
-                    <option value="1">Pulse — Breathing fade</option>
-                    <option value="2">Rainbow — Hue cycle</option>
-                    <option value="3">Wave — Staggered hue</option>
+                  <label>Timezone</label>
+                  <select id="tz-sel" onchange="onClockChange()">
+                    <option value="UTC0">UTC+0 &#8212; London</option>
+                    <option value="IST-5:30">UTC+5:30 &#8212; India</option>
+                    <option value="EST5EDT">UTC-5 &#8212; US Eastern</option>
+                    <option value="CST6CDT">UTC-6 &#8212; US Central</option>
+                    <option value="PST8PDT">UTC-8 &#8212; US Pacific</option>
+                    <option value="CET-1CEST">
+                      UTC+1 &#8212; Central Europe
+                    </option>
+                    <option value="MSK-3">UTC+3 &#8212; Moscow</option>
+                    <option value="GST-4">UTC+4 &#8212; Gulf</option>
+                    <option value="PKT-5">UTC+5 &#8212; Pakistan</option>
+                    <option value="BST-6">UTC+6 &#8212; Bangladesh</option>
+                    <option value="ICT-7">UTC+7 &#8212; Indochina</option>
+                    <option value="CST-8">UTC+8 &#8212; China/Singapore</option>
+                    <option value="JST-9">UTC+9 &#8212; Japan/Korea</option>
+                    <option value="AEST-10AEDT">
+                      UTC+10 &#8212; Australia East
+                    </option>
                   </select>
                 </div>
-                <div class="fg" style="margin:0">
-                  <label class="fl">Colon Blink</label>
-                  <div class="trow">
-                    <label class="tw2"><input type="checkbox" id="colon-blink" checked>
-                      <div class="ttr"></div>
-                      <div class="tth"></div>
-                    </label>
-                    <span class="tdsc">Blink colon at ~1 Hz</span>
+                <div class="fg">
+                  <label>NTP Server</label>
+                  <div class="inp-row">
+                    <input
+                      type="text"
+                      id="ntp-srv"
+                      value="pool.ntp.org"
+                      onchange="onClockChange()"
+                    /><button class="bsm" onclick="syncNTP()">Sync Now</button>
+                  </div>
+                  <span class="hint" id="ntp-hint">Last sync: &#8212;</span>
+                </div>
+                <div class="fg">
+                  <label>Alarm 1</label>
+                  <div class="alarm-r">
+                    <input
+                      type="time"
+                      id="al1-t"
+                      value="07:00"
+                      onchange="onClockChange()"
+                    /><label class="swl"
+                      ><input
+                        type="checkbox"
+                        id="al1-en"
+                        onchange="onClockChange()"
+                      /><span class="swt"><span class="swk"></span></span
+                      ><span>Enable</span></label
+                    >
+                  </div>
+                </div>
+                <div class="fg">
+                  <label>Alarm 2</label>
+                  <div class="alarm-r">
+                    <input
+                      type="time"
+                      id="al2-t"
+                      value="22:00"
+                      onchange="onClockChange()"
+                    /><label class="swl"
+                      ><input
+                        type="checkbox"
+                        id="al2-en"
+                        onchange="onClockChange()"
+                      /><span class="swt"><span class="swk"></span></span
+                      ><span>Enable</span></label
+                    >
+                  </div>
+                </div>
+                <div class="fg">
+                  <label>Notification Type</label>
+                  <select id="notif-type" onchange="onClockChange()">
+                    <option value="flash">Display Flash</option>
+                    <option value="blink">LED Blink</option>
+                    <option value="both">Flash + LED</option>
+                    <option value="none">Silent</option>
+                  </select>
+                </div>
+                <div class="fg">
+                  <label>Notification Sound</label>
+                  <select id="notif-sound" onchange="onClockChange()">
+                    <option value="beep">Short Beep</option>
+                    <option value="chime">Chime</option>
+                    <option value="alarm">Alarm Tone</option>
+                    <option value="none">None</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- POWER -->
+            <div class="spane" id="sec-power">
+              <h2>Power &amp; Battery</h2>
+              <div class="batt-card">
+                <div class="batt-vis">
+                  <div class="batt-body">
+                    <div class="batt-fill" id="batt-fill"></div>
+                    <span class="batt-txt" id="batt-txt">&#8212;%</span>
+                  </div>
+                  <div class="batt-cap"></div>
+                </div>
+                <div class="batt-stats">
+                  <div class="bs">
+                    <div class="bsv mono" id="batt-v">&#8212;V</div>
+                    <div class="bsl">VOLTAGE</div>
+                  </div>
+                  <div class="bs">
+                    <div class="bsv mono" id="batt-ma">&#8212;mA</div>
+                    <div class="bsl">CURRENT</div>
+                  </div>
+                  <div class="bs">
+                    <div class="bsv mono" id="pwr-src">&#8212;</div>
+                    <div class="bsl">SOURCE</div>
+                  </div>
+                  <div class="bs">
+                    <div class="bsv mono" id="batt-eta">&#8212;h</div>
+                    <div class="bsl">ETA</div>
+                  </div>
+                </div>
+              </div>
+              <div class="ctrl-grid">
+                <div class="fg">
+                  <label>Sleep Mode</label>
+                  <select id="sl-mode" onchange="onPowerChange()">
+                    <option value="none">Disabled</option>
+                    <option value="light">Light Sleep</option>
+                    <option value="deep">Deep Sleep</option>
+                    <option value="auto">Auto (battery)</option>
+                  </select>
+                </div>
+                <div class="fg">
+                  <label>Auto-Sleep Timeout</label>
+                  <div class="inp-row">
+                    <input
+                      type="number"
+                      id="sl-timeout"
+                      value="30"
+                      min="0"
+                      max="3600"
+                      onchange="onPowerChange()"
+                    /><span class="unit">sec</span>
+                  </div>
+                </div>
+                <div class="fg">
+                  <label>Low Battery Alert</label>
+                  <div class="inp-row">
+                    <input
+                      type="number"
+                      id="batt-alert"
+                      value="20"
+                      min="5"
+                      max="50"
+                      onchange="onPowerChange()"
+                    /><span class="unit">%</span>
+                  </div>
+                </div>
+                <div class="fg">
+                  <label>Power Saving</label>
+                  <div class="swl-list">
+                    <label class="swl"
+                      ><input
+                        type="checkbox"
+                        id="ps-dim"
+                        checked
+                        onchange="onPowerChange()"
+                      /><span class="swt"><span class="swk"></span></span
+                      ><span>Auto-dim on inactivity</span></label
+                    >
+                    <label class="swl"
+                      ><input
+                        type="checkbox"
+                        id="ps-wifi"
+                        onchange="onPowerChange()"
+                      /><span class="swt"><span class="swk"></span></span
+                      ><span>WiFi DTIM power saving</span></label
+                    >
                   </div>
                 </div>
               </div>
             </div>
-            <div style="display:flex;flex-direction:column;gap:14px">
-              <div class="card">
-                <div class="ch">Timezone</div>
-                <div class="fg"><label class="fl">POSIX TZ String</label><input type="text" id="timezone"
-                    value="IST-5:30" placeholder="e.g. UTC0"></div>
-                <div
-                  style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--r-md);padding:12px 14px;margin-bottom:16px;font-family:'Courier New',monospace;font-size:12px;line-height:2;color:var(--text2)">
-                  UTC → <span style="color:var(--text)">UTC0</span><br>
-                  IST +5:30 → <span style="color:var(--text)">IST-5:30</span><br>
-                  EST/EDT → <span style="color:var(--text)">EST5EDT,M3.2.0,M11.1.0</span><br>
-                  CET/CEST → <span style="color:var(--text)">CET-1CEST,M3.5.0,M10.5.0/3</span>
+
+            <!-- WIFI -->
+            <div class="spane" id="sec-wifi">
+              <h2>WiFi Settings</h2>
+              <div class="wstat-card">
+                <div class="wsc-dot" id="wsc-dot"></div>
+                <div class="wsc-info">
+                  <div class="wsc-ssid" id="wsc-ssid">Not connected</div>
+                  <div class="wsc-detail mono" id="wsc-detail">&#8212;</div>
                 </div>
-                <button class="btn btn-sol" onclick="saveSettings()">⊛ Save All Settings</button>
+                <div class="wsc-right">
+                  <div class="rssi-ic" id="rssi-ic">
+                    <span></span><span></span><span></span><span></span>
+                  </div>
+                  <div class="mono rssi-val" id="rssi-v">&#8212; dBm</div>
+                </div>
               </div>
-              <div class="card">
-                <div class="ch">Display Preview</div>
-                <div style="text-align:center;padding:10px 0">
-                  <canvas id="pvc" width="280" height="90" style="border-radius:var(--r-md);max-width:100%"></canvas>
+              <div class="prof-box">
+                <div class="pb-hdr">
+                  <span>Saved Networks</span
+                  ><button class="bsm" onclick="showAddWifi()">
+                    &#65291; Add
+                  </button>
                 </div>
-                <div style="font-size:11px;color:var(--text3);text-align:center;margin-top:8px">Live preview — updates
-                  on color change</div>
+                <div id="profiles-list">
+                  <div class="empty">Loading&#8230;</div>
+                </div>
+              </div>
+              <div class="add-wifi-form hidden" id="add-wifi-form">
+                <div class="awf-title">Add Network</div>
+                <div class="fg">
+                  <label>SSID</label
+                  ><input
+                    type="text"
+                    id="new-ssid"
+                    placeholder="Network name"
+                    autocomplete="off"
+                  />
+                </div>
+                <div class="fg">
+                  <label>Password</label>
+                  <div class="inp-row">
+                    <input
+                      type="password"
+                      id="new-pass"
+                      placeholder="Password"
+                      autocomplete="new-password"
+                    /><button class="bsm" onclick="togglePw()">
+                      &#128065;
+                    </button>
+                  </div>
+                </div>
+                <div class="awf-btns">
+                  <button class="bpri" onclick="addProfile()">
+                    Add Profile</button
+                  ><button class="bghost" onclick="hideAddWifi()">
+                    Cancel
+                  </button>
+                </div>
               </div>
             </div>
           </div>
         </div>
-
-        <!-- OTA -->
-        <div class="page" id="page-ota">
-          <div class="grid g2" style="gap:18px">
-            <div class="card">
-              <div class="ch">Firmware Update</div>
-              <p style="font-size:13px;color:var(--text2);margin-bottom:16px;line-height:1.6">Flash a compiled <strong
-                  style="color:var(--text)">.bin</strong> firmware image. Device reboots automatically after upload.</p>
-              <div class="uz" id="fw-zone" onclick="document.getElementById('fw-file').click()"
-                ondragover="dov(event,'fw-zone')" ondragleave="dlv('fw-zone')" ondrop="dpf(event,'fw')">
-                <input type="file" id="fw-file" accept=".bin" onchange="fch(this,'fw')">
-                <div class="uicon">⬆</div>
-                <div class="uhint">Drop <span>firmware .bin</span> here or click</div>
-                <div class="uname" id="fw-name"></div>
-              </div>
-              <div class="pw" id="fw-pw">
-                <div class="pt">
-                  <div class="pf" id="fw-bar"></div>
-                </div>
-                <div class="plbl" id="fw-lbl">0%</div>
-              </div>
-              <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
-                <button class="btn btn-sol" id="fw-btn" onclick="doOTA('firmware')" disabled>↑ Flash Firmware</button>
-                <button class="btn btn-dan" onclick="doReboot()">↺ Reboot Now</button>
-              </div>
-            </div>
-            <div class="card">
-              <div class="ch">Web App Update</div>
-              <p style="font-size:13px;color:var(--text2);margin-bottom:16px;line-height:1.6">Replace this interface
-                with a new <strong style="color:var(--text)">index.html</strong>. Written to SPIFFS — no reboot needed.
-              </p>
-              <div class="uz" id="web-zone" onclick="document.getElementById('web-file').click()"
-                ondragover="dov(event,'web-zone')" ondragleave="dlv('web-zone')" ondrop="dpf(event,'web')">
-                <input type="file" id="web-file" accept=".html" onchange="fch(this,'web')">
-                <div class="uicon">⬆</div>
-                <div class="uhint">Drop <span>index.html</span> here or click</div>
-                <div class="uname" id="web-name"></div>
-              </div>
-              <div class="pw" id="web-pw">
-                <div class="pt">
-                  <div class="pf" id="web-bar"></div>
-                </div>
-                <div class="plbl" id="web-lbl">0%</div>
-              </div>
-              <div style="margin-top:16px"><button class="btn btn-sol" id="web-btn" onclick="doOTA('webapp')" disabled>↑
-                  Upload WebApp</button></div>
-            </div>
-          </div>
-          <div class="stitle">Partition Information</div>
-          <div class="card">
-            <div class="grid g3" style="gap:14px">
-              <div>
-                <div class="ch">Running Slot</div>
-                <div style="font-size:16px;font-weight:700;color:var(--text)" id="ota-part">—</div>
-              </div>
-              <div>
-                <div class="ch">OTA Strategy</div>
-                <div style="font-size:14px;font-weight:600;color:var(--text2)">app0 ↔ app1 (alternating)</div>
-              </div>
-              <div>
-                <div class="ch">Rollback</div>
-                <div style="font-size:14px;font-weight:600;color:var(--text2)">Disabled (one-shot)</div>
-              </div>
-            </div>
-          </div>
-        </div>
-
       </div>
-    </div>
-  </div>
-  <div id="toast"></div>
-  <script>
-    /* ─── Theme ─── */
-    let dk = true;
-    function toggleTheme() {
-      dk = !dk;
-      document.documentElement.setAttribute('data-theme', dk ? 'dark' : 'light');
-      document.getElementById('ticon').textContent = dk ? '☀' : '☾';
-      document.getElementById('tlbl').textContent = dk ? 'Light' : 'Dark';
-      drawPreview();
-    }
-
-    /* ─── Nav ─── */
-    let page = 'dashboard';
-    function showPage(n) {
-      document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-      document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
-      document.getElementById('page-' + n).classList.add('active');
-      const nm = ['dashboard', 'logs', 'wifi', 'settings', 'ota'];
-      const it = document.querySelectorAll('.nav-item');
-      const ix = nm.indexOf(n); if (ix >= 0 && it[ix]) it[ix].classList.add('active');
-      const lb = { dashboard: 'Dashboard', logs: 'Logs', wifi: 'WiFi', settings: 'Settings', ota: 'OTA Update' };
-      st('ptitle', lb[n] || n); page = n;
-      if (n === 'dashboard') fSys();
-      if (n === 'wifi') fWifi();
-      if (n === 'settings') { fSet(); setTimeout(drawPreview, 80); }
-    }
-
-    /* ─── Clock ─── */
-    function updClk() { const n = new Date(); st('clk', [n.getHours(), n.getMinutes(), n.getSeconds()].map(v => String(v).padStart(2, '0')).join(':')); }
-    setInterval(updClk, 1000); updClk();
-
-    /* ─── Toast ─── */
-    let tt = null;
-    function toast(m, t = 'ok') { const e = document.getElementById('toast'); e.textContent = m; e.className = 'show ' + t; clearTimeout(tt); tt = setTimeout(() => e.classList.remove('show'), 3500); }
-
-    /* ─── API ─── */
-    async function api(method, path, body = null) {
-      const o = { method, headers: {} };
-      if (body !== null) { o.body = JSON.stringify(body); o.headers['Content-Type'] = 'application/json'; }
-      try { const r = await fetch(path, o); return await r.json(); } catch (e) { return { error: e.message }; }
-    }
-    function st(id, v) { const e = document.getElementById(id); if (e) e.textContent = v; }
-    function fn(n) { return n != null ? Number(n).toLocaleString() : '—'; }
-    function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
-
-    /* ─── Dashboard ─── */
-    async function fSys() {
-      const d = await api('GET', '/api/system'); if (!d || d.error) return;
-      st('s-heap', fn(d.free_heap)); st('s-mheap', fn(d.min_heap)); st('s-uptime', fn(d.uptime_s)); st('s-flash', fn(d.flash_kb));
-      st('s-chip', d.chip || '—'); st('s-cores', (d.cores || '?') + ' cores · rev ' + (d.revision || '?'));
-      st('s-idf', d.idf_ver || '—'); st('s-part', d.partition || '—'); st('ota-part', d.partition || '—');
-    }
-
-    /* ─── Logs ─── */
-    let lseq = 0, lall = [], asc = true;
-    function toggleAS() { asc = !asc; const b = document.getElementById('asb'); b.textContent = asc ? '▼ Auto-scroll' : '▼ Paused'; b.className = asc ? 'btn btn-pri btn-sm' : 'btn btn-wrn btn-sm'; }
-    function clearLogs() { lall = []; lseq = 0; renderLogs(); }
-    function pLv(l) { const m = l.match(/\[(INFO|WARN|ERROR|DEBUG|VERBOSE)\]/); return m ? m[1] : 'INFO'; }
-    function lCls(lv) { return { INFO: 'lI', WARN: 'lW', ERROR: 'lE', DEBUG: 'lD', VERBOSE: 'lV' }[lv] || 'lI'; }
-    function renderLogs() {
-      const f = document.getElementById('lf').value;
-      const show = f ? lall.filter(l => l.includes('[' + f + ']')) : lall;
-      const c = document.getElementById('lc');
-      const emp = document.getElementById('lemp');
-      if (show.length === 0) { c.innerHTML = ''; if (emp) { emp.style.display = 'flex'; c.appendChild(emp); } return; }
-      if (emp) emp.style.display = 'none';
-      const fr = document.createDocumentFragment();
-      show.forEach(line => {
-        const lv = pLv(line); const pts = line.split('[' + lv + '] '); const ts = pts[0].trim(); const bd = pts.slice(1).join('[' + lv + '] ');
-        const r = document.createElement('div'); r.className = 'le ' + lCls(lv);
-        r.innerHTML = `<span class="lts">${esc(ts)}</span><span class="llv">[${lv}]</span><span class="lbd">${esc(bd)}</span>`;
-        fr.appendChild(r);
-      });
-      c.innerHTML = ''; c.appendChild(fr);
-      st('lcnt', show.length + ' entries');
-      if (asc) c.scrollTop = c.scrollHeight;
-    }
-    async function fLogs() {
-      const d = await api('GET', '/api/logs?seq=' + lseq); if (!d || !d.entries || !d.entries.length) return;
-      lall.push(...d.entries); if (lall.length > 500) lall = lall.slice(-500); lseq = d.seq; st('lseq', lseq);
-      if (page === 'logs') renderLogs();
-    }
-
-    /* ─── WiFi ─── */
-    async function fWifi() {
-      const d = await api('GET', '/api/wifi'); if (!d || d.error) return;
-      const sta = d.sta || {}, ap = d.ap || {};
-      const se = document.getElementById('w-sta');
-      if (se) { se.textContent = sta.connected ? 'Connected' : 'Disconnected'; se.className = 'wsv ' + (sta.connected ? 'ok' : 'bad'); }
-      const ds = document.getElementById('d-sta'); if (ds) ds.className = 'sd ' + (sta.connected ? 'sd-g' : 'sd-r');
-      st('w-ssid', sta.ssid || '—'); st('w-ip', sta.ip || '—'); st('w-rssi', sta.rssi ? sta.rssi + ' dBm' : '—');
-      st('w-ap', ap.ssid || '—'); st('w-apc', ap.clients != null ? ap.clients : '—');
-      st('sb-sta', sta.connected ? sta.ssid : 'Disconnected'); st('sb-ap', ap.ssid || '—');
-      st('s-rssi', sta.rssi ? sta.rssi + ' dBm' : '—'); st('s-ip', sta.ip || '—'); st('s-apc', ap.clients != null ? ap.clients : '—');
-      const tb = document.getElementById('ptbody'); if (!tb) return; tb.innerHTML = '';
-      (d.profiles || []).forEach(p => {
-        const act = p.idx === sta.active_profile && sta.connected;
-        const tr = document.createElement('tr'); if (act) tr.className = 'rar';
-        tr.innerHTML = `<td><span class="badge bnfo">${p.idx}</span></td>`
-          + `<td style="font-weight:600">${esc(p.ssid)}</td>`
-          + `<td>${p.has_pass ? '<span class="badge bwrn">WPA2</span>' : '<span class="badge bnfo">Open</span>'}</td>`
-          + `<td>${act ? '<span class="badge bok">▲ Active</span>' : ''}</td>`
-          + `<td style="display:flex;gap:6px;padding:8px 14px"><button class="btn btn-suc btn-xs" onclick="cpro(${p.idx})">Connect</button><button class="btn btn-dan btn-xs" onclick="rpro(${p.idx})">Remove</button></td>`;
-        tb.appendChild(tr);
-      });
-    }
-    async function addProfile() {
-      const s = document.getElementById('new-ssid').value.trim(); const p = document.getElementById('new-pass').value;
-      if (!s) { toast('SSID is required', 'err'); return; }
-      const r = await api('POST', '/api/wifi/profile', { ssid: s, passwd: p });
-      if (r && r.ok) { toast('Profile added: ' + s); document.getElementById('new-ssid').value = ''; document.getElementById('new-pass').value = ''; fWifi(); }
-      else toast('Failed: ' + (r && r.error ? r.error : 'unknown'), 'err');
-    }
-    async function rpro(i) { if (!confirm('Remove profile #' + i + '?')) return; const r = await api('DELETE', '/api/wifi/profile?idx=' + i); if (r && r.ok) { toast('Profile removed'); fWifi(); } else toast('Failed', 'err'); }
-    async function cpro(i) { const r = await api('POST', '/api/wifi/connect?idx=' + i); if (r && r.ok) { toast('Connecting to profile ' + i + '…', 'warn'); setTimeout(fWifi, 3500); } else toast('Failed', 'err'); }
-
-    /* ─── Settings ─── */
-    async function fSet() {
-      const d = await api('GET', '/api/settings'); if (!d || d.error) return;
-      const on = d.color_on || { r: 0, g: 255, b: 255 }, off = d.color_off || { r: 0, g: 0, b: 0 };
-      setCols('on', on.r, on.g, on.b); setCols('off', off.r, off.g, off.b);
-      const ie = document.getElementById('intensity'); if (ie) { ie.value = d.intensity ?? 200; st('iv', ie.value); }
-      const ae = document.getElementById('anim-sel'); if (ae) ae.value = d.anim ?? 0;
-      const cb = document.getElementById('colon-blink'); if (cb) cb.checked = d.colon_blink !== false;
-      const tz = document.getElementById('timezone'); if (tz) tz.value = d.timezone || 'UTC0';
-      drawPreview();
-    }
-    function setCols(w, r, g, b) {
-      const h = '#' + [r, g, b].map(v => ((v || 0) < 16 ? '0' : '') + (v || 0).toString(16)).join('');
-      const e = document.getElementById('col-' + w); if (e) e.value = h;
-      const hx = document.getElementById('col-' + w + '-hex'); if (hx) hx.textContent = h.toUpperCase();
-      ['r', 'g', 'b'].forEach((c, i) => { const el = document.getElementById('col-' + w + '-' + c); if (el) el.value = [r, g, b][i]; });
-    }
-    function syncColor(w) {
-      const h = document.getElementById('col-' + w).value;
-      document.getElementById('col-' + w + '-hex').textContent = h.toUpperCase();
-      const r = parseInt(h.slice(1, 3), 16), g = parseInt(h.slice(3, 5), 16), b = parseInt(h.slice(5, 7), 16);
-      ['r', 'g', 'b'].forEach((c, i) => { const el = document.getElementById('col-' + w + '-' + c); if (el) el.value = [r, g, b][i]; });
-      drawPreview();
-    }
-    function syncColorFromRGB(w) {
-      const clamp = v => Math.min(255, Math.max(0, parseInt(v) || 0));
-      const r = clamp(document.getElementById('col-' + w + '-r').value);
-      const g = clamp(document.getElementById('col-' + w + '-g').value);
-      const b = clamp(document.getElementById('col-' + w + '-b').value);
-      const h = '#' + [r, g, b].map(v => (v < 16 ? '0' : '') + v.toString(16)).join('');
-      document.getElementById('col-' + w).value = h;
-      document.getElementById('col-' + w + '-hex').textContent = h.toUpperCase();
-      drawPreview();
-    }
-    function gCol(w) {
-      const cl = v => Math.min(255, Math.max(0, parseInt(document.getElementById('col-' + w + '-' + v).value) || 0));
-      return { r: cl('r'), g: cl('g'), b: cl('b') };
-    }
-    async function saveSettings() {
-      const b = { color_on: gCol('on'), color_off: gCol('off'), intensity: parseInt(document.getElementById('intensity').value), anim: parseInt(document.getElementById('anim-sel').value), colon_blink: document.getElementById('colon-blink').checked, timezone: document.getElementById('timezone').value.trim() };
-      const r = await api('POST', '/api/settings', b);
-      if (r && r.ok) toast('Settings saved ✓'); else toast('Save failed', 'err');
-    }
-
-    /* ─── Preview Canvas ─── */
-    const SGP = { A: [[1, 0], [5, 0], [5, 1], [1, 1]], B: [[5, 0], [6, 0], [6, 4], [5, 4]], C: [[5, 4], [6, 4], [6, 8], [5, 8]], D: [[1, 7], [5, 7], [5, 8], [1, 8]], E: [[0, 4], [1, 4], [1, 8], [0, 8]], F: [[0, 0], [1, 0], [1, 4], [0, 4]], G: [[1, 3.5], [5, 3.5], [5, 4.5], [1, 4.5]] };
-    const DGM = [0b0111111, 0b0000110, 0b1011011, 0b1001111, 0b1100110, 0b1101101, 0b1111101, 0b0000111, 0b1111111, 0b1101111];
-    function drawPreview() {
-      const cv = document.getElementById('pvc'); if (!cv) return;
-      const ctx = cv.getContext('2d'); const W = cv.width, H = cv.height; ctx.clearRect(0, 0, W, H);
-      ctx.fillStyle = dk ? '#161616' : '#f0efed'; ctx.beginPath(); ctx.roundRect(0, 0, W, H, 10); ctx.fill();
-      const on = gCol('on'), off = gCol('off');
-      const cOn = `rgb(${on.r},${on.g},${on.b})`; const cOff = `rgb(${off.r},${off.g},${off.b})`;
-      const br = (parseInt(document.getElementById('intensity')?.value) || 200) / 255;
-      const n = new Date(); const dg = [Math.floor(n.getHours() / 10), n.getHours() % 10, Math.floor(n.getMinutes() / 10), n.getMinutes() % 10];
-      const sc = 80 / 9;
-      dg.forEach((d, di) => {
-        const ox = 12 + di * (sc * 7 + (di === 2 ? 16 : 4));
-        const mask = DGM[d];
-        'ABCDEFG'.split('').forEach((s, si) => {
-          const on_bit = (mask >> si) & 1; const pts = SGP[s];
-          ctx.beginPath(); pts.forEach(([px, py], i) => { const x = ox + px * sc, y = 5 + py * sc; i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }); ctx.closePath();
-          ctx.fillStyle = on_bit ? cOn : (cOff === 'rgb(0,0,0)' ? 'transparent' : cOff); ctx.globalAlpha = on_bit ? br : .25; ctx.fill();
-        });
-      });
-      ctx.globalAlpha = br; ctx.fillStyle = cOn;
-      const cx = 12 + 2 * (sc * 7 + 4) + 4;
-      ctx.beginPath(); ctx.arc(cx, 5 + 80 * .35, sc * .55, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(cx, 5 + 80 * .65, sc * .55, 0, Math.PI * 2); ctx.fill();
-      ctx.globalAlpha = 1;
-    }
-
-    /* ─── OTA ─── */
-    const SF = {};
-    function fch(inp, w) { const f = inp.files[0]; if (!f) return; SF[w === 'fw' ? 'firmware' : 'webapp'] = f; st(w + '-name', f.name + ' · ' + (f.size / 1024).toFixed(1) + ' KB'); const b = document.getElementById(w + '-btn'); if (b) b.disabled = false; }
-    function dov(e, id) { e.preventDefault(); document.getElementById(id).classList.add('drag-over'); }
-    function dlv(id) { document.getElementById(id).classList.remove('drag-over'); }
-    function dpf(e, w) { e.preventDefault(); dlv((w === 'fw' ? 'fw' : 'web') + '-zone'); const f = e.dataTransfer.files[0]; if (!f) return; const k = w === 'fw' ? 'firmware' : 'webapp'; SF[k] = f; const p = w === 'fw' ? 'fw' : 'web'; st(p + '-name', f.name + ' · ' + (f.size / 1024).toFixed(1) + ' KB'); const b = document.getElementById(p + '-btn'); if (b) b.disabled = false; }
-    async function doOTA(type) {
-      const pf = type === 'firmware' ? 'fw' : 'web', file = SF[type];
-      if (!file) { toast('No file selected', 'err'); return; }
-      const btn = document.getElementById(pf + '-btn'), pw = document.getElementById(pf + '-pw'), bar = document.getElementById(pf + '-bar'), lbl = document.getElementById(pf + '-lbl');
-      if (btn) btn.disabled = true; if (pw) pw.style.display = 'block'; if (bar) bar.style.width = '0%'; if (lbl) lbl.textContent = 'Uploading…';
-      const ep = type === 'firmware' ? '/api/ota/firmware' : '/api/ota/webapp';
-      try {
-        await new Promise((res, rej) => {
-          const xhr = new XMLHttpRequest(); xhr.open('POST', ep); xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-          xhr.upload.onprogress = e => { if (e.lengthComputable) { const p = Math.round(e.loaded / e.total * 100); if (bar) bar.style.width = p + '%'; if (lbl) lbl.textContent = p + '%  (' + (e.loaded / 1024).toFixed(1) + ' / ' + (e.total / 1024).toFixed(1) + ' KB)'; } };
-          xhr.onload = () => { try { const r = JSON.parse(xhr.responseText); if (r.ok) { if (bar) bar.style.width = '100%'; if (r.reboot) { toast('Firmware flashed — rebooting…', 'warn'); if (lbl) lbl.textContent = 'Done! Rebooting…'; } else { toast('WebApp updated ✓'); if (lbl) lbl.textContent = 'Complete!'; if (btn) btn.disabled = false; } res(); } else rej(new Error(r.error || 'unknown')); } catch (e) { rej(e); } };
-          xhr.onerror = () => rej(new Error('Network error')); xhr.send(file);
-        });
-      } catch (e) { toast('OTA failed: ' + e.message, 'err'); if (lbl) lbl.textContent = 'Failed: ' + e.message; if (btn) btn.disabled = false; }
-    }
-    async function doReboot() { if (!confirm('Reboot the device now?')) return; await api('POST', '/api/reboot'); toast('Device is rebooting…', 'warn'); }
-
-    /* ─── Polling ─── */
-    setInterval(fLogs, 2000);
-    setInterval(() => { if (page === 'wifi') fWifi(); }, 6000);
-    setInterval(() => { if (page === 'dashboard') fSys(); }, 12000);
-    setInterval(async () => { const d = await api('GET', '/api/wifi'); if (!d || d.error) return; const sta = d.sta || {}, ap = d.ap || {}; const ds = document.getElementById('d-sta'); if (ds) ds.className = 'sd ' + (sta.connected ? 'sd-g' : 'sd-r'); st('sb-sta', sta.connected ? sta.ssid : 'Disconnected'); st('sb-ap', ap.ssid || '—'); }, 10000);
-
-    /* ─── Init ─── */
-    fSys(); fWifi(); fLogs(); setTimeout(drawPreview, 150);
-  </script>
-</body>
-
+    </main>
+    <div id="toasts"></div>
+    <script src="app.js"></script>
+  </body>
 </html>

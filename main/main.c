@@ -17,6 +17,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 
 #include "wt_app_log.h"
 #include "wt_app_wifi.h"
@@ -31,11 +33,10 @@
 
 void wt_task_main(void *pvParameters)
 {
-    APPLOG_I("Display task started");
+    APPLOG_I("---------- APP MAIN TASK STARTED ----------");
 
     while (1)
     {
-        /* Pull current settings for every frame */
         wt_settings_t cfg = wt_settings_get();
 
         wt_segd_request_t req = {
@@ -69,7 +70,17 @@ void app_main(void)
 
     /* Initialise log ring buffer first (macros safe from here on) */
     wt_log_init();
-    APPLOG_I("WallTick booting…");
+
+    APPLOG_I("========== WATCHTOWER APPLICATION STARTED ==========");
+
+    /* NVS init */
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
 
     /* Load persistent settings from NVS */
     wt_settings_init();
@@ -82,7 +93,6 @@ void app_main(void)
     xTaskCreatePinnedToCore(wt_task_led, "WT_LED", 16384, NULL, 5, NULL, 1);
     xTaskCreatePinnedToCore(wt_task_main, "WT_MAIN", 4096, NULL, 4, NULL, 1);
 
-    /* app_main task can idle — all work is in the tasks above */
     while (1)
     {
         vTaskDelay(pdMS_TO_TICKS(10000));

@@ -1,6 +1,6 @@
 /*!
     \file   wt_app_settings.c
-    \brief  NVS-backed application settings with thread-safe access.
+    \brief  NVS-backed application settings — expanded for full web console.
  */
 #include "wt_app_settings.h"
 #include "wt_app_log.h"
@@ -9,138 +9,240 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include <string.h>
+#include <stdio.h>
 
 /* ------------------------------------------------------------------ */
-/*  NVS namespace / keys                                                 */
+/*  NVS Keys                                                          */
 /* ------------------------------------------------------------------ */
-#define NS "wt_settings"
-#define K_COL_ON_R "col_on_r"
-#define K_COL_ON_G "col_on_g"
-#define K_COL_ON_B "col_on_b"
-#define K_COL_OFF_R "col_off_r"
-#define K_COL_OFF_G "col_off_g"
-#define K_COL_OFF_B "col_off_b"
-#define K_INTENSITY "intensity"
-#define K_ANIM "anim"
-#define K_COLON_BLK "colon_blk"
-#define K_TIMEZONE "timezone"
+
+#define WT_NVS_CONFIG "wt_cfg"
+/* display */
+#define WT_NVSK_COLOR_HEX "color_hex"
+#define WT_NVSK_COL_ON_R "col_r"
+#define WT_NVSK_COL_ON_G "col_g"
+#define WT_NVSK_COL_ON_B "col_b"
+#define WT_NVSK_INTENSITY "intensity"
+#define WT_NVSK_ANIM "anim"
+#define WT_NVSK_COLON_BLK "colon_blk"
+#define WT_NVSK_ANIM_SCROLL "anim_scroll"
+#define WT_NVSK_ANIM_PULSE "anim_pulse"
+#define WT_NVSK_ANIM_TRANS "anim_trans"
+#define WT_NVSK_REACT_EFF "react_eff"
+/* clock */
+#define WT_NVSK_TIMEZONE "timezone"
+#define WT_NVSK_NTP_SRV "ntp_srv"
+#define WT_NVSK_TIME_FMT "time_fmt"
+#define WT_NVSK_AL1_TIME "al1_time"
+#define WT_NVSK_AL1_EN "al1_en"
+#define WT_NVSK_AL2_TIME "al2_time"
+#define WT_NVSK_AL2_EN "al2_en"
+#define WT_NVSK_NOTIF_TYPE "notif_type"
+#define WT_NVSK_NOTIF_SND "notif_snd"
+/* power */
+#define WT_NVSK_SLEEP_MODE "sleep_mode"
+#define WT_NVSK_SLEEP_TO "sleep_to"
+#define WT_NVSK_BATT_ALERT "batt_alert"
+#define WT_NVSK_PS_DIM "ps_dim"
+#define WT_NVSK_PS_WIFI "ps_wifi"
+
+#define WT_NVS_GET_UINT8(k, d)                  \
+    if (nvs_get_u8(wt_nvs_h, k, &u8) == ESP_OK) \
+        (d) = u8;
+#define WT_NVS_GET_UINT16(k, d)                   \
+    if (nvs_get_u16(wt_nvs_h, k, &u16) == ESP_OK) \
+        (d) = u16;
+#define WT_NVS_GET_STR(k, d) \
+    len = sizeof(d);         \
+    nvs_get_str(wt_nvs_h, k, (d), &len);
+
+static wt_settings_t wt_app_setting;
+static SemaphoreHandle_t wt_app_setting_mutex = NULL;
 
 /* ------------------------------------------------------------------ */
-/*  Module state                                                         */
+/*  NVS Default Application Settings                                  */
 /* ------------------------------------------------------------------ */
-static wt_settings_t s_settings;
-static SemaphoreHandle_t s_mutex = NULL;
 
-/* ------------------------------------------------------------------ */
-/*  Defaults                                                             */
-/* ------------------------------------------------------------------ */
-static const wt_settings_t k_defaults = {
-    .color_on = {0, 255, 255}, /* cyan  */
-    .color_off = {0, 0, 0},    /* off   */
+static const wt_settings_t wt_app_default_setting = {
+    .color_on = {200, 200, 200},
+    .color_off = {0, 0, 0},
     .intensity = 200,
     .anim = WT_SEGD_ANIM_SOLID,
     .colon_blink = true,
+    .anim_scroll = false,
+    .anim_pulse = false,
+    .anim_transition = true,
+    .reaction_effect = "none",
+    .color_hex = "#00c8ff",
     .timezone = "IST-5:30",
+    .ntp_server = "pool.ntp.org",
+    .time_format = 24,
+    .alarm1_time = "07:00",
+    .alarm1_en = false,
+    .alarm2_time = "22:00",
+    .alarm2_en = false,
+    .notif_type = "flash",
+    .notif_sound = "beep",
+    .sleep_mode = "none",
+    .sleep_timeout_s = 30,
+    .batt_alert_pct = 20,
+    .ps_dim = true,
+    .ps_wifi = false,
 };
 
-/* ------------------------------------------------------------------ */
-/*  Helpers                                                              */
-/* ------------------------------------------------------------------ */
+bool wt_settings_parse_hex_color(const char *hex, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    if (!hex || hex[0] != '#' || strlen(hex) < 7)
+    {
+        return false;
+    }
+    unsigned rv = 0, gv = 0, bv = 0;
+    if (sscanf(hex + 1, "%02x%02x%02x", &rv, &gv, &bv) != 3)
+    {
+        APPLOG_E("Failed to parse hex colors!");
+        return false;
+    }
+    *r = (uint8_t)rv;
+    *g = (uint8_t)gv;
+    *b = (uint8_t)bv;
+    return true;
+}
 
 static void load_from_nvs(void)
 {
-    nvs_handle_t h;
-    if (nvs_open(NS, NVS_READONLY, &h) != ESP_OK)
+    nvs_handle_t wt_nvs_h;
+    if (nvs_open(WT_NVS_CONFIG, NVS_READONLY, &wt_nvs_h) != ESP_OK)
+    {
+        APPLOG_E("Failed to load settings from NVS!");
         return;
+    }
 
     uint8_t u8 = 0;
-    uint8_t i8 = 0;
+    uint16_t u16 = 0;
+    size_t len;
 
-#define NVS_GET_U8(key, dst)               \
-    if (nvs_get_u8(h, key, &u8) == ESP_OK) \
-        (dst) = u8;
+    WT_NVS_GET_UINT8(WT_NVSK_COL_ON_R, wt_app_setting.color_on.r)
+    WT_NVS_GET_UINT8(WT_NVSK_COL_ON_G, wt_app_setting.color_on.g)
+    WT_NVS_GET_UINT8(WT_NVSK_COL_ON_B, wt_app_setting.color_on.b)
+    WT_NVS_GET_UINT8(WT_NVSK_INTENSITY, wt_app_setting.intensity)
+    WT_NVS_GET_UINT8(WT_NVSK_ANIM, u8);
+    wt_app_setting.anim = (wt_segd_anim_t)u8;
+    WT_NVS_GET_UINT8(WT_NVSK_COLON_BLK, u8);
+    wt_app_setting.colon_blink = (bool)u8;
+    WT_NVS_GET_UINT8(WT_NVSK_ANIM_SCROLL, u8);
+    wt_app_setting.anim_scroll = (bool)u8;
+    WT_NVS_GET_UINT8(WT_NVSK_ANIM_PULSE, u8);
+    wt_app_setting.anim_pulse = (bool)u8;
+    WT_NVS_GET_UINT8(WT_NVSK_ANIM_TRANS, u8);
+    wt_app_setting.anim_transition = (bool)u8;
+    WT_NVS_GET_STR(WT_NVSK_REACT_EFF, wt_app_setting.reaction_effect)
+    WT_NVS_GET_STR(WT_NVSK_COLOR_HEX, wt_app_setting.color_hex)
+    WT_NVS_GET_STR(WT_NVSK_TIMEZONE, wt_app_setting.timezone)
+    WT_NVS_GET_STR(WT_NVSK_NTP_SRV, wt_app_setting.ntp_server)
+    WT_NVS_GET_UINT8(WT_NVSK_TIME_FMT, wt_app_setting.time_format)
+    WT_NVS_GET_STR(WT_NVSK_AL1_TIME, wt_app_setting.alarm1_time)
+    WT_NVS_GET_UINT8(WT_NVSK_AL1_EN, u8);
+    wt_app_setting.alarm1_en = (bool)u8;
+    WT_NVS_GET_STR(WT_NVSK_AL2_TIME, wt_app_setting.alarm2_time)
+    WT_NVS_GET_UINT8(WT_NVSK_AL2_EN, u8);
+    wt_app_setting.alarm2_en = (bool)u8;
+    WT_NVS_GET_STR(WT_NVSK_NOTIF_TYPE, wt_app_setting.notif_type)
+    WT_NVS_GET_STR(WT_NVSK_NOTIF_SND, wt_app_setting.notif_sound)
+    WT_NVS_GET_STR(WT_NVSK_SLEEP_MODE, wt_app_setting.sleep_mode)
+    WT_NVS_GET_UINT16(WT_NVSK_SLEEP_TO, wt_app_setting.sleep_timeout_s)
+    WT_NVS_GET_UINT8(WT_NVSK_BATT_ALERT, wt_app_setting.batt_alert_pct)
+    WT_NVS_GET_UINT8(WT_NVSK_PS_DIM, u8);
+    wt_app_setting.ps_dim = (bool)u8;
+    WT_NVS_GET_UINT8(WT_NVSK_PS_WIFI, u8);
+    wt_app_setting.ps_wifi = (bool)u8;
 
-    NVS_GET_U8(K_COL_ON_R, s_settings.color_on.r);
-    NVS_GET_U8(K_COL_ON_G, s_settings.color_on.g);
-    NVS_GET_U8(K_COL_ON_B, s_settings.color_on.b);
-    NVS_GET_U8(K_COL_OFF_R, s_settings.color_off.r);
-    NVS_GET_U8(K_COL_OFF_G, s_settings.color_off.g);
-    NVS_GET_U8(K_COL_OFF_B, s_settings.color_off.b);
-    NVS_GET_U8(K_INTENSITY, s_settings.intensity);
-    NVS_GET_U8(K_COLON_BLK, i8);
-    s_settings.colon_blink = (bool)i8;
-
-    uint8_t anim = 0;
-    if (nvs_get_u8(h, K_ANIM, &anim) == ESP_OK)
-        s_settings.anim = (wt_segd_anim_t)anim;
-
-    size_t len = sizeof(s_settings.timezone);
-    nvs_get_str(h, K_TIMEZONE, s_settings.timezone, &len);
-
-    nvs_close(h);
+    nvs_close(wt_nvs_h);
 }
 
 static bool save_to_nvs(const wt_settings_t *s)
 {
-    nvs_handle_t h;
-    if (nvs_open(NS, NVS_READWRITE, &h) != ESP_OK)
+    nvs_handle_t wt_nvs_h;
+    if (nvs_open(WT_NVS_CONFIG, NVS_READWRITE, &wt_nvs_h) != ESP_OK)
+    {
+        APPLOG_E("Failed to open NVS read-write!");
         return false;
+    }
 
-    nvs_set_u8(h, K_COL_ON_R, s->color_on.r);
-    nvs_set_u8(h, K_COL_ON_G, s->color_on.g);
-    nvs_set_u8(h, K_COL_ON_B, s->color_on.b);
-    nvs_set_u8(h, K_COL_OFF_R, s->color_off.r);
-    nvs_set_u8(h, K_COL_OFF_G, s->color_off.g);
-    nvs_set_u8(h, K_COL_OFF_B, s->color_off.b);
-    nvs_set_u8(h, K_INTENSITY, s->intensity);
-    nvs_set_u8(h, K_ANIM, (uint8_t)s->anim);
-    nvs_set_u8(h, K_COLON_BLK, (uint8_t)s->colon_blink);
-    nvs_set_str(h, K_TIMEZONE, s->timezone);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_COL_ON_R, s->color_on.r);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_COL_ON_G, s->color_on.g);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_COL_ON_B, s->color_on.b);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_INTENSITY, s->intensity);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_ANIM, (uint8_t)s->anim);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_COLON_BLK, (uint8_t)s->colon_blink);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_ANIM_SCROLL, (uint8_t)s->anim_scroll);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_ANIM_PULSE, (uint8_t)s->anim_pulse);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_ANIM_TRANS, (uint8_t)s->anim_transition);
+    nvs_set_str(wt_nvs_h, WT_NVSK_REACT_EFF, s->reaction_effect);
+    nvs_set_str(wt_nvs_h, WT_NVSK_COLOR_HEX, s->color_hex);
+    nvs_set_str(wt_nvs_h, WT_NVSK_TIMEZONE, s->timezone);
+    nvs_set_str(wt_nvs_h, WT_NVSK_NTP_SRV, s->ntp_server);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_TIME_FMT, s->time_format);
+    nvs_set_str(wt_nvs_h, WT_NVSK_AL1_TIME, s->alarm1_time);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_AL1_EN, (uint8_t)s->alarm1_en);
+    nvs_set_str(wt_nvs_h, WT_NVSK_AL2_TIME, s->alarm2_time);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_AL2_EN, (uint8_t)s->alarm2_en);
+    nvs_set_str(wt_nvs_h, WT_NVSK_NOTIF_TYPE, s->notif_type);
+    nvs_set_str(wt_nvs_h, WT_NVSK_NOTIF_SND, s->notif_sound);
+    nvs_set_str(wt_nvs_h, WT_NVSK_SLEEP_MODE, s->sleep_mode);
+    nvs_set_u16(wt_nvs_h, WT_NVSK_SLEEP_TO, s->sleep_timeout_s);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_BATT_ALERT, s->batt_alert_pct);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_PS_DIM, (uint8_t)s->ps_dim);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_PS_WIFI, (uint8_t)s->ps_wifi);
 
-    esp_err_t err = nvs_commit(h);
-    nvs_close(h);
+    esp_err_t err = nvs_commit(wt_nvs_h);
+    if (err != ESP_OK)
+    {
+        APPLOG_E("Failed to commit NVS!");
+    }
+    nvs_close(wt_nvs_h);
     return (err == ESP_OK);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Public API                                                           */
-/* ------------------------------------------------------------------ */
-
 void wt_settings_init(void)
 {
-    s_mutex = xSemaphoreCreateMutex();
-    s_settings = k_defaults;
+    wt_app_setting_mutex = xSemaphoreCreateMutex();
+    wt_app_setting = wt_app_default_setting;
     load_from_nvs();
-
-    /* Apply timezone immediately */
-    setenv("TZ", s_settings.timezone, 1);
+    setenv("TZ", wt_app_setting.timezone, 1);
     tzset();
-
-    APPLOG_I("Settings loaded (anim=%d intensity=%d tz=%s)",
-             s_settings.anim, s_settings.intensity, s_settings.timezone);
+    APPLOG_I("Settings loaded (tz=%s fmt=%dh color=%s)",
+             wt_app_setting.timezone, wt_app_setting.time_format, wt_app_setting.color_hex);
 }
 
 wt_settings_t wt_settings_get(void)
 {
     wt_settings_t snap;
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    snap = s_settings;
-    xSemaphoreGive(s_mutex);
+
+    xSemaphoreTake(wt_app_setting_mutex, portMAX_DELAY);
+    snap = wt_app_setting;
+    xSemaphoreGive(wt_app_setting_mutex);
+
     return snap;
 }
 
-bool wt_settings_set(const wt_settings_t *s)
+bool wt_settings_set(const wt_settings_t *wt_settings)
 {
-    if (!s)
+    if (!wt_settings)
+    {
         return false;
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    s_settings = *s;
-    xSemaphoreGive(s_mutex);
+    }
 
-    setenv("TZ", s->timezone, 1);
+    xSemaphoreTake(wt_app_setting_mutex, portMAX_DELAY);
+    wt_app_setting = *wt_settings;
+    xSemaphoreGive(wt_app_setting_mutex);
+
+    setenv("TZ", wt_settings->timezone, 1);
     tzset();
 
-    bool ok = save_to_nvs(s);
-    APPLOG_I("Settings saved (ok=%d)", ok);
-    return ok;
+    bool status = save_to_nvs(wt_settings);
+    if (status != true)
+    {
+        APPLOG_E("Failed to save settings!");
+    }
+
+    return status;
 }

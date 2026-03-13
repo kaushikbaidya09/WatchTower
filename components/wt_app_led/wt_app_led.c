@@ -16,6 +16,8 @@
 
 #include "wt_app_led.h"
 #include "wt_seg_display.h"
+#include "wt_app_log.h"
+
 #include <string.h>
 #include <math.h>
 #include "freertos/FreeRTOS.h"
@@ -346,13 +348,13 @@ static void render_colon(bool on, const wt_segd_request_t *req, float phase)
  */
 void wt_task_led(void *pvParameter)
 {
-    ESP_LOGI(TAG, "LED task starting");
+    APPLOG_I("---------- LED TASK STARTED ----------");
 
     /* Create shared display queue */
     wt_segd_queue = xQueueCreate(1, sizeof(wt_segd_request_t));
     if (!wt_segd_queue)
     {
-        ESP_LOGE(TAG, "Failed to create wt_segd_queue");
+        APPLOG_E("Failed to create wt_segd_queue");
         vTaskDelete(NULL);
         return;
     }
@@ -394,8 +396,7 @@ void wt_task_led(void *pvParameter)
     float rainbow_phase = 0.0f; ///< Phase accumulator for RAINBOW / WAVE animation
     uint32_t tick = 0;          ///< Frame counter used for colon blink timing
 
-    ESP_LOGI(TAG, "Render loop started "
-                  "(58 LEDs: D1@0 D2@14 colon@28 D3@30 D4@44)");
+    APPLOG_I("Render loop started (58 LEDs: D1@0 D2@14 colon@28 D3@30 D4@44)");
 
     while (1)
     {
@@ -406,7 +407,7 @@ void wt_task_led(void *pvParameter)
         {
             current = new_req;
             wt_segd_prepare_frame(&current, &frame);
-            ESP_LOGD(TAG, "Request: mode=%d value=%d", current.mode, current.value);
+            // APPLOG_I("Request: mode=%d value=%d", current.mode, current.value);
         }
 
         /* Resolve colon state for this frame */
@@ -437,9 +438,13 @@ void wt_task_led(void *pvParameter)
         pulse_phase += PULSE_SPEED;
         rainbow_phase += RAINBOW_SPEED;
         if (pulse_phase > 2.0f * (float)M_PI)
+        {
             pulse_phase -= 2.0f * (float)M_PI;
+        }
         if (rainbow_phase > 2.0f * (float)M_PI)
+        {
             rainbow_phase -= 2.0f * (float)M_PI;
+        }
         tick++;
     }
 }

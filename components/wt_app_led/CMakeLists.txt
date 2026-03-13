@@ -7,4 +7,5 @@ idf_component_register(
     PRIV_REQUIRES 
         esp_driver_rmt
         driver
+        wt_app_log
 )

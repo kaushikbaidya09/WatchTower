@@ -393,7 +393,7 @@ bool wt_wifi_connect_profile(int index)
 
 void wt_task_wifi(void *pvParameters)
 {
-    APPLOG_I("---------- WIFI TASK STARTED ----------");
+    // APPLOG_I("---------- WIFI TASK STARTED ----------");
 
     s_mutex = xSemaphoreCreateMutex();
     memset(&s_status, 0, sizeof(s_status));

@@ -7,4 +7,5 @@ idf_component_register(
         wt_app_log
         wt_app_wifi
         wt_app_led
+        wt_app_web
 )

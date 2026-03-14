@@ -37,8 +37,6 @@
 #define WAVE_HUE_STEP 20           /*!< Hue degrees between adjacent segments in WAVE */
 #define COLON_BLINK_FRAMES 25      /*!< Half-period in frames for colon blink (500 ms) */
 
-static const char *TAG = "wt_app_led";
-
 /*!
     Shared queue  (declared extern in wt_seg_display.h).
     Other tasks post wt_segd_request_t items here.
@@ -348,7 +346,7 @@ static void render_colon(bool on, const wt_segd_request_t *req, float phase)
  */
 void wt_task_led(void *pvParameter)
 {
-    APPLOG_I("---------- LED TASK STARTED ----------");
+    // APPLOG_I("---------- LED TASK STARTED ----------");
 
     /* Create shared display queue */
     wt_segd_queue = xQueueCreate(1, sizeof(wt_segd_request_t));

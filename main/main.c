@@ -33,7 +33,7 @@
 
 void wt_task_main(void *pvParameters)
 {
-    APPLOG_I("---------- APP MAIN TASK STARTED ----------");
+    // APPLOG_I("---------- APP MAIN TASK STARTED ----------");
 
     while (1)
     {

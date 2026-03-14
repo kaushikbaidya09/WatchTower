@@ -45,6 +45,167 @@
         httpd_resp_sendstr((req), "{\"error\":\"" msg "\"}"); \
     } while (0)
 
+typedef esp_err_t (*stream_write_cb_t)(void *ctx, const char *data, size_t len);
+
+typedef struct
+{
+    bool multipart;
+    bool headers_skipped;
+    bool done;
+    char boundary[80];
+    size_t boundary_len;
+    char pending[1536];
+    size_t pending_len;
+} upload_stream_t;
+
+static const char *find_bytes(const char *buf, size_t buf_len,
+                              const char *needle, size_t needle_len)
+{
+    if (!buf || !needle || needle_len == 0 || buf_len < needle_len)
+        return NULL;
+
+    for (size_t i = 0; i <= buf_len - needle_len; ++i)
+    {
+        if (memcmp(buf + i, needle, needle_len) == 0)
+            return buf + i;
+    }
+    return NULL;
+}
+
+static bool upload_stream_init(httpd_req_t *req, upload_stream_t *st)
+{
+    memset(st, 0, sizeof(*st));
+
+    char content_type[128];
+    if (httpd_req_get_hdr_value_str(req, "Content-Type",
+                                    content_type, sizeof(content_type)) != ESP_OK)
+    {
+        return true;
+    }
+
+    const char *needle = "boundary=";
+    char *boundary = strstr(content_type, needle);
+    if (!boundary)
+    {
+        return true;
+    }
+
+    boundary += strlen(needle);
+    size_t raw_len = strcspn(boundary, ";");
+    if (raw_len == 0 || (raw_len + 2) >= sizeof(st->boundary))
+    {
+        APPLOG_E("Upload boundary too long");
+        return false;
+    }
+
+    st->boundary[0] = '-';
+    st->boundary[1] = '-';
+    memcpy(st->boundary + 2, boundary, raw_len);
+    st->boundary[raw_len + 2] = '\0';
+    st->boundary_len = raw_len + 2;
+    st->multipart = true;
+    return true;
+}
+
+static esp_err_t upload_stream_flush_payload(upload_stream_t *st,
+                                             stream_write_cb_t write_cb,
+                                             void *ctx,
+                                             bool final_flush)
+{
+    if (!st->multipart)
+        return ESP_OK;
+
+    char tail_marker[96];
+    size_t tail_len = 2 + st->boundary_len;
+    if (tail_len > sizeof(tail_marker))
+        return ESP_FAIL;
+
+    tail_marker[0] = '\r';
+    tail_marker[1] = '\n';
+    memcpy(tail_marker + 2, st->boundary, st->boundary_len);
+
+    const size_t keep_len = tail_len + 4;
+
+    if (final_flush)
+    {
+        const char *tail = find_bytes(st->pending, st->pending_len,
+                                      tail_marker, tail_len);
+        if (!tail)
+        {
+            APPLOG_E("Upload tail boundary not found");
+            return ESP_FAIL;
+        }
+
+        size_t payload_len = (size_t)(tail - st->pending);
+        if (payload_len > 0 && write_cb(ctx, st->pending, payload_len) != ESP_OK)
+            return ESP_FAIL;
+
+        st->pending_len = 0;
+        st->done = true;
+        return ESP_OK;
+    }
+
+    if (st->pending_len <= keep_len)
+        return ESP_OK;
+
+    size_t flush_len = st->pending_len - keep_len;
+    if (write_cb(ctx, st->pending, flush_len) != ESP_OK)
+        return ESP_FAIL;
+
+    memmove(st->pending, st->pending + flush_len, keep_len);
+    st->pending_len = keep_len;
+    return ESP_OK;
+}
+
+static esp_err_t upload_stream_consume(upload_stream_t *st,
+                                       const char *chunk,
+                                       size_t chunk_len,
+                                       stream_write_cb_t write_cb,
+                                       void *ctx)
+{
+    if (!st->multipart)
+        return write_cb(ctx, chunk, chunk_len);
+
+    if ((st->pending_len + chunk_len) > sizeof(st->pending))
+    {
+        APPLOG_E("Upload parser buffer overflow");
+        return ESP_FAIL;
+    }
+
+    memcpy(st->pending + st->pending_len, chunk, chunk_len);
+    st->pending_len += chunk_len;
+
+    if (!st->headers_skipped)
+    {
+        static const char sep[] = "\r\n\r\n";
+        const char *hdr_end = find_bytes(st->pending, st->pending_len,
+                                         sep, sizeof(sep) - 1);
+        if (!hdr_end)
+            return ESP_OK;
+
+        size_t offset = (size_t)(hdr_end - st->pending) + (sizeof(sep) - 1);
+        memmove(st->pending, st->pending + offset, st->pending_len - offset);
+        st->pending_len -= offset;
+        st->headers_skipped = true;
+    }
+
+    return upload_stream_flush_payload(st, write_cb, ctx, false);
+}
+
+static esp_err_t upload_stream_finish(upload_stream_t *st,
+                                      stream_write_cb_t write_cb,
+                                      void *ctx)
+{
+    if (!st->multipart)
+        return ESP_OK;
+    if (!st->headers_skipped)
+    {
+        APPLOG_E("Upload part headers missing");
+        return ESP_FAIL;
+    }
+    return upload_stream_flush_payload(st, write_cb, ctx, true);
+}
+
 /* Read entire request body (up to max_len).  Returns bytes read or -1. */
 static int read_body(httpd_req_t *req, char *buf, size_t max_len)
 {
@@ -694,6 +855,18 @@ static esp_err_t handler_ntp_sync(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t ota_write_cb(void *ctx, const char *data, size_t len)
+{
+    esp_ota_handle_t ota_handle = *(esp_ota_handle_t *)ctx;
+    return esp_ota_write(ota_handle, data, len);
+}
+
+static esp_err_t file_write_cb(void *ctx, const char *data, size_t len)
+{
+    FILE *f = (FILE *)ctx;
+    return (fwrite(data, 1, len, f) == len) ? ESP_OK : ESP_FAIL;
+}
+
 /* ------------------------------------------------------------------ */
 /*  POST /api/ota/firmware  — OTA firmware update                        */
 /* ------------------------------------------------------------------ */
@@ -720,9 +893,18 @@ static esp_err_t handler_ota_firmware(httpd_req_t *req)
         return ESP_OK;
     }
 
+    upload_stream_t stream;
+    if (!upload_stream_init(req, &stream))
+    {
+        esp_ota_abort(ota_handle);
+        RESP_ERR(req, "invalid upload content-type");
+        return ESP_OK;
+    }
+
     char buf[1024];
     int remaining = req->content_len;
     bool ota_ok = true;
+    bool wrote_bytes = false;
 
     while (remaining > 0)
     {
@@ -732,19 +914,34 @@ static esp_err_t handler_ota_firmware(httpd_req_t *req)
         int n = httpd_req_recv(req, buf, to_recv);
         if (n <= 0)
         {
+            if (n == HTTPD_SOCK_ERR_TIMEOUT)
+                continue;
             ota_ok = false;
             break;
         }
-        if (esp_ota_write(ota_handle, buf, n) != ESP_OK)
+        if (upload_stream_consume(&stream, buf, (size_t)n, ota_write_cb, &ota_handle) != ESP_OK)
         {
             ota_ok = false;
             break;
         }
+        wrote_bytes = true;
         remaining -= n;
     }
 
-    if (!ota_ok || esp_ota_end(ota_handle) != ESP_OK)
+    if (ota_ok && upload_stream_finish(&stream, ota_write_cb, &ota_handle) != ESP_OK)
+        ota_ok = false;
+
+    if (!ota_ok || !wrote_bytes)
     {
+        esp_ota_abort(ota_handle);
+        RESP_ERR(req, "ota write/end failed");
+        return ESP_OK;
+    }
+
+    err = esp_ota_end(ota_handle);
+    if (err != ESP_OK)
+    {
+        APPLOG_E("esp_ota_end failed: %s", esp_err_to_name(err));
         RESP_ERR(req, "ota write/end failed");
         return ESP_OK;
     }
@@ -777,6 +974,14 @@ static esp_err_t handler_ota_webapp(httpd_req_t *req)
         return ESP_OK;
     }
 
+    upload_stream_t stream;
+    if (!upload_stream_init(req, &stream))
+    {
+        fclose(f);
+        RESP_ERR(req, "invalid upload content-type");
+        return ESP_OK;
+    }
+
     char buf[512];
     int remaining = req->content_len;
     bool ok = true;
@@ -789,16 +994,22 @@ static esp_err_t handler_ota_webapp(httpd_req_t *req)
         int n = httpd_req_recv(req, buf, to_recv);
         if (n <= 0)
         {
+            if (n == HTTPD_SOCK_ERR_TIMEOUT)
+                continue;
             ok = false;
             break;
         }
-        if (fwrite(buf, 1, n, f) != (size_t)n)
+        if (upload_stream_consume(&stream, buf, (size_t)n, file_write_cb, f) != ESP_OK)
         {
             ok = false;
             break;
         }
         remaining -= n;
     }
+
+    if (ok && upload_stream_finish(&stream, file_write_cb, f) != ESP_OK)
+        ok = false;
+
     fclose(f);
 
     if (ok)
@@ -888,7 +1099,7 @@ static void start_server(void)
 
 void wt_task_web(void *pvParameters)
 {
-    APPLOG_I("---------- WEB TASK STARTED ----------");
+    // APPLOG_I("---------- WEB TASK STARTED ----------");
 
     /* Wait for WiFi AP to come up */
     vTaskDelay(pdMS_TO_TICKS(3000));

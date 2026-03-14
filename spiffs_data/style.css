@@ -209,6 +209,7 @@ body {
   gap: 8px;
 }
 
+.conn-badge,
 .wbadge {
   display: inline-flex;
   align-items: center;
@@ -222,12 +223,19 @@ body {
   max-width: 190px;
 }
 
+.conn-badge {
+  min-width: 126px;
+  justify-content: center;
+}
+
+.conn-badge span:last-child,
 .wbadge span:last-child {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.conn-dot,
 .wdot {
   width: 8px;
   height: 8px;
@@ -236,15 +244,18 @@ body {
   background: #8498a6;
 }
 
+.conn-dot.up,
 .wdot.up {
   background: var(--ok);
   box-shadow: 0 0 0 5px rgba(39, 209, 141, 0.15);
 }
 
+.conn-dot.down,
 .wdot.down {
   background: var(--err);
 }
 
+.conn-dot.pend,
 .wdot.pend {
   background: var(--warn);
   animation: pulse 1s infinite;

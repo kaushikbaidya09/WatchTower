@@ -11,11 +11,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include <sys/stat.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_http_server.h"
+#include "esp_err.h"
 #include "esp_spiffs.h"
 #include "esp_timer.h"
 #include "esp_ota_ops.h"
@@ -23,6 +25,7 @@
 #include "esp_system.h"
 #include "esp_chip_info.h"
 #include "esp_flash.h"
+#include "driver/temperature_sensor.h"
 #include "cJSON.h"
 
 /* ------------------------------------------------------------------ */
@@ -57,6 +60,9 @@ typedef struct
     char pending[1536];
     size_t pending_len;
 } upload_stream_t;
+
+static temperature_sensor_handle_t s_temp_sensor = NULL;
+static bool s_temp_sensor_ready = false;
 
 static const char *find_bytes(const char *buf, size_t buf_len,
                               const char *needle, size_t needle_len)
@@ -204,6 +210,51 @@ static esp_err_t upload_stream_finish(upload_stream_t *st,
         return ESP_FAIL;
     }
     return upload_stream_flush_payload(st, write_cb, ctx, true);
+}
+
+static bool ensure_temp_sensor_ready(void)
+{
+    if (s_temp_sensor_ready)
+        return true;
+
+    temperature_sensor_config_t cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
+    esp_err_t err = temperature_sensor_install(&cfg, &s_temp_sensor);
+    if (err != ESP_OK)
+    {
+        APPLOG_E("temperature_sensor_install failed: %s", esp_err_to_name(err));
+        s_temp_sensor = NULL;
+        return false;
+    }
+
+    err = temperature_sensor_enable(s_temp_sensor);
+    if (err != ESP_OK)
+    {
+        APPLOG_E("temperature_sensor_enable failed: %s", esp_err_to_name(err));
+        temperature_sensor_uninstall(s_temp_sensor);
+        s_temp_sensor = NULL;
+        return false;
+    }
+
+    s_temp_sensor_ready = true;
+    return true;
+}
+
+static bool read_mcu_temperature_c(float *out_celsius)
+{
+    if (!out_celsius)
+        return false;
+
+    if (!ensure_temp_sensor_ready())
+        return false;
+
+    esp_err_t err = temperature_sensor_get_celsius(s_temp_sensor, out_celsius);
+    if (err != ESP_OK)
+    {
+        APPLOG_E("temperature_sensor_get_celsius failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    return true;
 }
 
 /* Read entire request body (up to max_len).  Returns bytes read or -1. */
@@ -498,6 +549,8 @@ static esp_err_t handler_system(httpd_req_t *req)
 
     /* WiFi status for dashboard */
     wt_wifi_status_t wst = wt_wifi_get_status();
+    float temperature_c = NAN;
+    bool has_temperature = read_mcu_temperature_c(&temperature_c);
 
     /* Reset reason */
     const char *reset_reason = "unknown";
@@ -549,7 +602,7 @@ static esp_err_t handler_system(httpd_req_t *req)
              "\"ota_slot\":\"%s\","
              "\"app0_state\":\"%s\","
              "\"app1_state\":\"%s\","
-             "\"temperature\":0.0,"
+             "\"temperature\":%.1f,"
              "\"reset_reason\":\"%s\","
              "\"sta_connected\":%s,"
              "\"sta_ssid\":\"%s\","
@@ -567,6 +620,7 @@ static esp_err_t handler_system(httpd_req_t *req)
              __DATE__, __TIME__,
              esp_get_idf_version(),
              ota_slot, app0_st, "empty",
+             has_temperature ? temperature_c : 0.0f,
              reset_reason,
              wst.sta_connected ? "true" : "false",
              wst.sta_ssid,

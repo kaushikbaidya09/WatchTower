@@ -9,6 +9,7 @@ idf_component_register(
         esp_timer
         app_update
         spi_flash
+        esp_driver_tsens
         json
         wt_app_log
         wt_app_wifi

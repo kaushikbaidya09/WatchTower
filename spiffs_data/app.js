@@ -20,6 +20,14 @@ const S = {
   displayMode: "time",
   displayValue: 1234,
   displayText: "HELO",
+  liveBusy: false,
+  liveTickMs: 500,
+  lastSettingsSync: 0,
+  conn: {
+    state: "pend",
+    lastSeen: 0,
+    lastTry: 0,
+  },
   timers: {},
 };
 const _db = {};
@@ -28,16 +36,21 @@ function debounce(key, fn, ms) {
   _db[key] = setTimeout(fn, ms || 500);
 }
 async function apiGet(path) {
+  S.conn.lastTry = Date.now();
   try {
     const r = await fetch(path);
     if (!r.ok) throw new Error(r.status);
-    return await r.json();
+    const data = await r.json();
+    markConnectionSeen();
+    return data;
   } catch (e) {
+    markConnectionLost();
     console.warn("GET", path, e.message);
     return null;
   }
 }
 async function apiPost(path, data) {
+  S.conn.lastTry = Date.now();
   try {
     const r = await fetch(path, {
       method: "POST",
@@ -45,8 +58,11 @@ async function apiPost(path, data) {
       body: JSON.stringify(data),
     });
     if (!r.ok) throw new Error(r.status);
-    return await r.json();
+    const body = await r.json();
+    markConnectionSeen();
+    return body;
   } catch (e) {
+    markConnectionLost();
     console.warn("POST", path, e.message);
     return null;
   }
@@ -57,6 +73,19 @@ function el(id) {
 function setText(id, v) {
   const e = el(id);
   if (e) e.textContent = v;
+}
+function isFocused(id) {
+  return document.activeElement === el(id);
+}
+function setValueIfIdle(id, value) {
+  const node = el(id);
+  if (!node || isFocused(id)) return;
+  node.value = value;
+}
+function setCheckedIfIdle(id, value) {
+  const node = el(id);
+  if (!node || isFocused(id)) return;
+  node.checked = !!value;
 }
 function fmtBytes(b) {
   if (b == null) return "—";
@@ -359,6 +388,38 @@ function initTheme() {
   } catch (e) {}
 }
 
+function fmtTemperature(value) {
+  return Number.isFinite(value) ? value.toFixed(1) + "°C" : "—";
+}
+function updateConnectionBadge() {
+  const age = S.conn.lastSeen ? Date.now() - S.conn.lastSeen : Infinity;
+  let state = S.conn.state;
+  if (age > 1500) state = S.conn.lastSeen ? "down" : "pend";
+  const dot = el("conn-dot");
+  if (dot) dot.className = "conn-dot " + state;
+  if (state === "up") setText("conn-label", "LIVE");
+  else if (state === "down") setText("conn-label", "DISCONNECTED");
+  else setText("conn-label", "CONNECTING");
+}
+function markConnectionSeen() {
+  S.conn.lastSeen = Date.now();
+  S.conn.state = "up";
+  updateConnectionBadge();
+}
+function markConnectionLost() {
+  if (!S.conn.lastSeen || Date.now() - S.conn.lastSeen > 1500) {
+    S.conn.state = "down";
+    updateConnectionBadge();
+  }
+}
+function applyFmtUi(n) {
+  S.fmt = n;
+  const b24 = el("fmt-24"),
+    b12 = el("fmt-12");
+  if (b24) b24.classList.toggle("active", n === 24);
+  if (b12) b12.classList.toggle("active", n === 12);
+}
+
 /* ═════ DASHBOARD  /api/status ════════════ */
 async function refreshDash() {
   const d = await apiGet("/api/status");
@@ -367,7 +428,7 @@ async function refreshDash() {
   setText("d-heap", fmtBytes(d.free_heap));
   setText("d-rssi", d.rssi ? d.rssi + " dBm" : "—");
   setText("d-ip", d.sta_ip || d.ap_ip || "—");
-  setText("d-temp", d.temperature ? d.temperature.toFixed(1) + "°C" : "—");
+  setText("d-temp", fmtTemperature(d.temperature));
   setText("d-fw", d.app_version || "—");
   const dot = el("wdot"),
     lbl = el("wifi-label");
@@ -437,7 +498,7 @@ async function refreshSys() {
   setText("i-heap", fmtBytes(d.free_heap));
   setText("i-minheap", fmtBytes(d.min_free_heap));
   setText("i-uptime", fmtUptime(d.uptime_s));
-  setText("i-temp", d.temperature ? d.temperature.toFixed(1) + "°C" : "—");
+  setText("i-temp", fmtTemperature(d.temperature));
   setText("i-reset", d.reset_reason || "—");
 }
 function setBar(id, pct, labelId) {
@@ -461,22 +522,34 @@ async function refreshFW() {
 }
 
 async function doRefresh(silent) {
-  const activePage = document.querySelector(".page.active");
-  const activeSec = document.querySelector(".snb.active");
-  const jobs = [refreshDash(), refreshDisplay()];
-  if (activePage && activePage.id === "pg-settings") {
-    const sid = activeSec ? activeSec.dataset.s : "sys";
-    if (sid === "sys") jobs.push(refreshSys());
-    if (sid === "fw") jobs.push(refreshFW());
-    if (sid === "logs") jobs.push(pollLogs());
-    if (sid === "power") jobs.push(refreshPower());
-    if (sid === "wifi") jobs.push(refreshWifi());
-    if (sid === "display")
-      jobs.push(refreshDisplay());
-  }
-  await Promise.allSettled(jobs);
-  tick();
+  await runLiveRefresh();
   if (!silent) toast("Data refreshed", "ok", 1200);
+}
+
+async function runLiveRefresh() {
+  if (S.liveBusy) return;
+  S.liveBusy = true;
+  try {
+    const now = Date.now();
+    const jobs = [
+      refreshDash(),
+      refreshDisplay(),
+      refreshSys(),
+      refreshFW(),
+      refreshWifi(),
+      refreshPower(),
+      pollLogs(),
+    ];
+    if (now - S.lastSettingsSync >= S.liveTickMs) {
+      jobs.push(loadSettings());
+      S.lastSettingsSync = now;
+    }
+    await Promise.allSettled(jobs);
+    tick();
+    updateConnectionBadge();
+  } finally {
+    S.liveBusy = false;
+  }
 }
 
 /* ═════ LOGS  /api/logs?seq=N ════════════ */
@@ -525,9 +598,7 @@ async function pollLogs() {
   }
 }
 function startLogPoll() {
-  if (S.timers.logs) return;
   pollLogs();
-  S.timers.logs = setInterval(pollLogs, 2000);
 }
 function setLogFilter(lv) {
   S.logFilter = lv;
@@ -622,11 +693,7 @@ function markActiveSwatch() {
 
 /* ═════ CLOCK SETTINGS ══════════════════ */
 function setFmt(n) {
-  S.fmt = n;
-  const b24 = el("fmt-24"),
-    b12 = el("fmt-12");
-  if (b24) b24.classList.toggle("active", n === 24);
-  if (b12) b12.classList.toggle("active", n === 12);
+  applyFmtUi(n);
   onClockChange();
 }
 function onClockChange() {
@@ -680,13 +747,11 @@ async function refreshPower() {
   setText("batt-ma", d.current ? d.current + "mA" : "—mA");
   setText("pwr-src", d.source || "—");
   setText("batt-eta", d.eta_hours ? d.eta_hours.toFixed(1) + "h" : "—h");
-  if (d.sleep_mode && el("sl-mode")) el("sl-mode").value = d.sleep_mode;
-  if (d.sleep_timeout != null && el("sl-timeout"))
-    el("sl-timeout").value = d.sleep_timeout;
-  if (d.batt_alert_pct != null && el("batt-alert"))
-    el("batt-alert").value = d.batt_alert_pct;
-  if (d.ps_dim != null && el("ps-dim")) el("ps-dim").checked = d.ps_dim;
-  if (d.ps_wifi != null && el("ps-wifi")) el("ps-wifi").checked = d.ps_wifi;
+  if (d.sleep_mode) setValueIfIdle("sl-mode", d.sleep_mode);
+  if (d.sleep_timeout != null) setValueIfIdle("sl-timeout", String(d.sleep_timeout));
+  if (d.batt_alert_pct != null) setValueIfIdle("batt-alert", String(d.batt_alert_pct));
+  if (d.ps_dim != null) setCheckedIfIdle("ps-dim", d.ps_dim);
+  if (d.ps_wifi != null) setCheckedIfIdle("ps-wifi", d.ps_wifi);
 }
 function onPowerChange() {
   debounce("power", sendPowerSettings, 500);
@@ -892,27 +957,26 @@ async function loadSettings() {
   if (!d) return;
   if (d.color) {
     S.color = d.color;
-    if (el("dp-color")) el("dp-color").value = d.color;
+    setValueIfIdle("dp-color", d.color);
   }
   if (d.brightness != null) {
     S.brightness = d.brightness;
-    updateBrightnessUi(d.brightness);
+    if (!isFocused("dp-brt")) updateBrightnessUi(d.brightness);
   }
   if (d.display_mode) {
     S.displayMode = d.display_mode;
-    if (el("dp-mode")) el("dp-mode").value = d.display_mode;
+    setValueIfIdle("dp-mode", d.display_mode);
   }
   if (d.display_value != null) {
     S.displayValue = d.display_value;
-    if (el("dp-value")) el("dp-value").value = d.display_value;
+    setValueIfIdle("dp-value", String(d.display_value));
   }
   if (d.display_text != null) {
     S.displayText = d.display_text;
-    if (el("dp-text")) el("dp-text").value = d.display_text;
+    setValueIfIdle("dp-text", d.display_text);
   }
   if (d.time_format) {
-    S.fmt = d.time_format;
-    setFmt(d.time_format);
+    applyFmtUi(d.time_format);
   }
   const bmap = {
     "dp-blink": "anim_colon",
@@ -926,24 +990,22 @@ async function loadSettings() {
   };
   Object.keys(bmap).forEach(function (eid) {
     const k = bmap[eid];
-    if (d[k] != null && el(eid)) el(eid).checked = d[k];
+    if (d[k] != null) setCheckedIfIdle(eid, d[k]);
   });
   if (d.anim_colon != null) S.blink = d.anim_colon;
+  if (d.anim_scroll != null) S.scroll = d.anim_scroll;
   if (d.anim_pulse != null) S.pulse = d.anim_pulse;
-  if (d.reaction_effect && el("dp-react"))
-    el("dp-react").value = d.reaction_effect;
-  if (d.timezone && el("tz-sel")) el("tz-sel").value = d.timezone;
-  if (d.ntp_server && el("ntp-srv")) el("ntp-srv").value = d.ntp_server;
-  if (d.notif_type && el("notif-type")) el("notif-type").value = d.notif_type;
-  if (d.notif_sound && el("notif-sound"))
-    el("notif-sound").value = d.notif_sound;
-  if (d.sleep_mode && el("sl-mode")) el("sl-mode").value = d.sleep_mode;
-  if (d.alarm1_time && el("al1-t")) el("al1-t").value = d.alarm1_time;
-  if (d.alarm2_time && el("al2-t")) el("al2-t").value = d.alarm2_time;
-  if (d.sleep_timeout != null && el("sl-timeout"))
-    el("sl-timeout").value = d.sleep_timeout;
-  if (d.batt_alert_pct != null && el("batt-alert"))
-    el("batt-alert").value = d.batt_alert_pct;
+  if (d.anim_transition != null) S.transition = d.anim_transition;
+  if (d.reaction_effect) setValueIfIdle("dp-react", d.reaction_effect);
+  if (d.timezone) setValueIfIdle("tz-sel", d.timezone);
+  if (d.ntp_server) setValueIfIdle("ntp-srv", d.ntp_server);
+  if (d.notif_type) setValueIfIdle("notif-type", d.notif_type);
+  if (d.notif_sound) setValueIfIdle("notif-sound", d.notif_sound);
+  if (d.sleep_mode) setValueIfIdle("sl-mode", d.sleep_mode);
+  if (d.alarm1_time) setValueIfIdle("al1-t", d.alarm1_time);
+  if (d.alarm2_time) setValueIfIdle("al2-t", d.alarm2_time);
+  if (d.sleep_timeout != null) setValueIfIdle("sl-timeout", String(d.sleep_timeout));
+  if (d.batt_alert_pct != null) setValueIfIdle("batt-alert", String(d.batt_alert_pct));
   markActiveSwatch();
   syncDisplayModeInputs();
   updateDispInfo();
@@ -969,6 +1031,7 @@ function initNavState() {
 async function init() {
   initTheme();
   setupDnD();
+  updateConnectionBadge();
   window.addEventListener("resize", function () {
     resizeAll();
     renderDisplay("vd-canvas");
@@ -979,10 +1042,8 @@ async function init() {
   initNavState();
   await doRefresh(true);
   startLogPoll();
-  S.timers.dash = setInterval(refreshDash, 10000);
-  S.timers.display = setInterval(refreshDisplay, 500);
-  S.timers.wifi = setInterval(refreshWifi, 8000);
-  S.timers.power = setInterval(refreshPower, 30000);
+  S.timers.live = setInterval(runLiveRefresh, S.liveTickMs);
+  S.timers.conn = setInterval(updateConnectionBadge, 250);
   setInterval(tick, 500);
   tick();
 }

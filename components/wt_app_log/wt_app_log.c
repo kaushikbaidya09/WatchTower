@@ -7,7 +7,7 @@
 #include <stdio.h>
 
 /* ------------------------------------------------------------------ */
-/*  Internal ring buffer                                                 */
+/*  Internal ring buffer                                              */
 /* ------------------------------------------------------------------ */
 
 typedef struct
@@ -19,32 +19,28 @@ typedef struct
 static log_entry_t s_buf[WT_LOG_BUF_ENTRIES];
 static uint32_t s_write_idx = 0; /*!< Next slot to overwrite */
 static uint32_t s_seq = 0;       /*!< Last assigned sequence  */
-static SemaphoreHandle_t s_mutex = NULL;
-
-/* ------------------------------------------------------------------ */
-/*  Public API                                                           */
-/* ------------------------------------------------------------------ */
+static SemaphoreHandle_t wt_app_log_mutex = NULL;
 
 void wt_log_init(void)
 {
-    if (s_mutex == NULL)
+    if (wt_app_log_mutex == NULL)
     {
-        s_mutex = xSemaphoreCreateMutex();
+        wt_app_log_mutex = xSemaphoreCreateMutex();
     }
 }
 
 void wt_log_append(const char *line)
 {
-    if (!s_mutex || !line)
+    if (!wt_app_log_mutex || !line)
         return;
 
-    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(50)) == pdTRUE)
+    if (xSemaphoreTake(wt_app_log_mutex, pdMS_TO_TICKS(50)) == pdTRUE)
     {
         uint32_t idx = s_write_idx % WT_LOG_BUF_ENTRIES;
         strlcpy(s_buf[idx].data, line, WT_LOG_ENTRY_LEN);
         s_buf[idx].seq = ++s_seq;
         s_write_idx++;
-        xSemaphoreGive(s_mutex);
+        xSemaphoreGive(wt_app_log_mutex);
     }
 }
 
@@ -93,7 +89,7 @@ int wt_log_read_json(uint32_t from_seq, char *out_buf,
     if (!out_buf || buf_len < 16)
         return 0;
 
-    if (!s_mutex)
+    if (!wt_app_log_mutex)
     {
         snprintf(out_buf, buf_len, "{\"seq\":0,\"entries\":[]}");
         if (next_seq)
@@ -101,7 +97,7 @@ int wt_log_read_json(uint32_t from_seq, char *out_buf,
         return 0;
     }
 
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    xSemaphoreTake(wt_app_log_mutex, portMAX_DELAY);
 
     uint32_t cur_seq = s_seq;
     uint32_t cur_write = s_write_idx;
@@ -109,7 +105,7 @@ int wt_log_read_json(uint32_t from_seq, char *out_buf,
     /* Nothing new */
     if (cur_seq <= from_seq)
     {
-        xSemaphoreGive(s_mutex);
+        xSemaphoreGive(wt_app_log_mutex);
         snprintf(out_buf, buf_len, "{\"seq\":%lu,\"entries\":[]}", cur_seq);
         if (next_seq)
             *next_seq = from_seq;
@@ -162,7 +158,7 @@ int wt_log_read_json(uint32_t from_seq, char *out_buf,
     }
     out_buf[pos] = '\0';
 
-    xSemaphoreGive(s_mutex);
+    xSemaphoreGive(wt_app_log_mutex);
 
     if (next_seq)
         *next_seq = cur_seq;

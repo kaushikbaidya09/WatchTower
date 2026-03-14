@@ -60,15 +60,12 @@ void wt_task_main(void *pvParameters)
 }
 
 /* ------------------------------------------------------------------ */
-/*  Application entry point                                              */
+/*  Application entry point                                           */
 /* ------------------------------------------------------------------ */
 
 void app_main(void)
 {
-    /* Silence ESP-IDF component logs — our APPLOG handles output */
     esp_log_level_set("*", ESP_LOG_NONE);
-
-    /* Initialise log ring buffer first (macros safe from here on) */
     wt_log_init();
 
     APPLOG_I("========== WATCHTOWER APPLICATION STARTED ==========");

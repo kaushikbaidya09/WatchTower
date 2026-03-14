@@ -1,221 +1,233 @@
-/*!
-    \file   wt_seg_display.c
-    \brief  7-segment character encoding and frame preparation.
-
-    Implements wt_segd_char() and wt_segd_prepare_frame().
-    All lookup tables are file-local; the public API is declared in
-    wt_seg_display.h.
- */
-
 #include "wt_seg_display.h"
 #include <string.h>
 #include <time.h>
 
-/*!
-    Digit lookup table  (A=bit0, B=bit1, C=bit2, D=bit3, E=bit4, F=bit5, G=bit6)
- */
-static const uint8_t s_digits[10] = {
-    [0] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F,
-    [1] = WT_SEGD_B | WT_SEGD_C,
-    [2] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_D | WT_SEGD_E | WT_SEGD_G,
-    [3] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_G,
-    [4] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_F | WT_SEGD_G,
-    [5] = WT_SEGD_A | WT_SEGD_C | WT_SEGD_D | WT_SEGD_F | WT_SEGD_G,
-    [6] = WT_SEGD_A | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
-    [7] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C,
-    [8] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
-    [9] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_F | WT_SEGD_G,
-};
+typedef enum
+{
+    SEGD_SYM_SPACE = 0,
+    SEGD_SYM_COLON,
+    SEGD_SYM_DASH,
+    SEGD_SYM_UNDERSCORE,
+    SEGD_SYM_EQUAL,
+    SEGD_SYM_DEGREE,
+
+    SEGD_SYM_DIGIT_0,
+    SEGD_SYM_DIGIT_1,
+    SEGD_SYM_DIGIT_2,
+    SEGD_SYM_DIGIT_3,
+    SEGD_SYM_DIGIT_4,
+    SEGD_SYM_DIGIT_5,
+    SEGD_SYM_DIGIT_6,
+    SEGD_SYM_DIGIT_7,
+    SEGD_SYM_DIGIT_8,
+    SEGD_SYM_DIGIT_9,
+
+    SEGD_SYM_UPPER_A,
+    SEGD_SYM_UPPER_B,
+    SEGD_SYM_UPPER_C,
+    SEGD_SYM_UPPER_D,
+    SEGD_SYM_UPPER_E,
+    SEGD_SYM_UPPER_F,
+    SEGD_SYM_UPPER_G,
+    SEGD_SYM_UPPER_H,
+    SEGD_SYM_UPPER_I,
+    SEGD_SYM_UPPER_J,
+    SEGD_SYM_UPPER_K,
+    SEGD_SYM_UPPER_L,
+    SEGD_SYM_UPPER_M,
+    SEGD_SYM_UPPER_N,
+    SEGD_SYM_UPPER_O,
+    SEGD_SYM_UPPER_P,
+    SEGD_SYM_UPPER_Q,
+    SEGD_SYM_UPPER_R,
+    SEGD_SYM_UPPER_S,
+    SEGD_SYM_UPPER_T,
+    SEGD_SYM_UPPER_U,
+    SEGD_SYM_UPPER_V,
+    SEGD_SYM_UPPER_W,
+    SEGD_SYM_UPPER_X,
+    SEGD_SYM_UPPER_Y,
+    SEGD_SYM_UPPER_Z,
+
+    SEGD_SYM_LOWER_A,
+    SEGD_SYM_LOWER_B,
+    SEGD_SYM_LOWER_C,
+    SEGD_SYM_LOWER_D,
+    SEGD_SYM_LOWER_E,
+    SEGD_SYM_LOWER_F,
+    SEGD_SYM_LOWER_G,
+    SEGD_SYM_LOWER_H,
+    SEGD_SYM_LOWER_I,
+    SEGD_SYM_LOWER_J,
+    SEGD_SYM_LOWER_K,
+    SEGD_SYM_LOWER_L,
+    SEGD_SYM_LOWER_M,
+    SEGD_SYM_LOWER_N,
+    SEGD_SYM_LOWER_O,
+    SEGD_SYM_LOWER_P,
+    SEGD_SYM_LOWER_Q,
+    SEGD_SYM_LOWER_R,
+    SEGD_SYM_LOWER_S,
+    SEGD_SYM_LOWER_T,
+    SEGD_SYM_LOWER_U,
+    SEGD_SYM_LOWER_V,
+    SEGD_SYM_LOWER_W,
+    SEGD_SYM_LOWER_X,
+    SEGD_SYM_LOWER_Y,
+    SEGD_SYM_LOWER_Z,
+
+    SEGD_SYM_MAX
+
+} wt_segd_symbol_t;
 
 /*!
-    Uppercase letter table.
-    Best-effort representations; some letters are ambiguous on 7 segments.
+    7 Segment display symbols lookup table.  (A=bit0, B=bit1, C=bit2, D=bit3, E=bit4, F=bit5, G=bit6)
  */
-static const uint8_t s_upper[26] = {
-    ['A' - 'A'] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
-    ['B' - 'A'] = WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G, /* looks like b */
-    ['C' - 'A'] = WT_SEGD_A | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F,
-    ['D' - 'A'] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_G, /* looks like d */
-    ['E' - 'A'] = WT_SEGD_A | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
-    ['F' - 'A'] = WT_SEGD_A | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
-    ['G' - 'A'] = WT_SEGD_A | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F,
-    ['H' - 'A'] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
-    ['I' - 'A'] = WT_SEGD_E | WT_SEGD_F,
-    ['J' - 'A'] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E,
-    ['K' - 'A'] = WT_SEGD_A | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G, /* approx */
-    ['L' - 'A'] = WT_SEGD_D | WT_SEGD_E | WT_SEGD_F,
-    ['M' - 'A'] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_E | WT_SEGD_F, /* approx, like A */
-    ['N' - 'A'] = WT_SEGD_C | WT_SEGD_E | WT_SEGD_G,                         /* looks like n */
-    ['O' - 'A'] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F,
-    ['P' - 'A'] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
-    ['Q' - 'A'] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_F | WT_SEGD_G,
-    ['R' - 'A'] = WT_SEGD_E | WT_SEGD_G,                                     /* looks like r */
-    ['S' - 'A'] = WT_SEGD_A | WT_SEGD_C | WT_SEGD_D | WT_SEGD_F | WT_SEGD_G, /* same as 5 */
-    ['T' - 'A'] = WT_SEGD_D | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,             /* looks like t */
-    ['U' - 'A'] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F,
-    ['V' - 'A'] = WT_SEGD_C | WT_SEGD_D | WT_SEGD_E,                         /* lower half only */
-    ['W' - 'A'] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F, /* approx, like U */
-    ['X' - 'A'] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G, /* like H */
-    ['Y' - 'A'] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_F | WT_SEGD_G,
-    ['Z' - 'A'] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_D | WT_SEGD_E | WT_SEGD_G, /* same as 2 */
-};
+static const uint8_t wt_segd_symbol[SEGD_SYM_MAX] = {
 
-/*!
-    Lowercase letter table.
-    Where lowercase differs meaningfully from uppercase a distinct glyph is
-    used; otherwise falls back to the uppercase approximation.
- */
-static const uint8_t s_lower[26] = {
-    ['a' - 'a'] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_G,
-    ['b' - 'a'] = WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
-    ['c' - 'a'] = WT_SEGD_D | WT_SEGD_E | WT_SEGD_G,
-    ['d' - 'a'] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_G,
-    ['e' - 'a'] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
-    ['f' - 'a'] = WT_SEGD_A | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
-    ['g' - 'a'] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_F | WT_SEGD_G,
-    ['h' - 'a'] = WT_SEGD_C | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
-    ['i' - 'a'] = WT_SEGD_E,
-    ['j' - 'a'] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E,
-    ['k' - 'a'] = WT_SEGD_A | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G, /* approx */
-    ['l' - 'a'] = WT_SEGD_E | WT_SEGD_F,
-    ['m' - 'a'] = WT_SEGD_C | WT_SEGD_E | WT_SEGD_G, /* approx, like n */
-    ['n' - 'a'] = WT_SEGD_C | WT_SEGD_E | WT_SEGD_G,
-    ['o' - 'a'] = WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_G,
-    ['p' - 'a'] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
-    ['q' - 'a'] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_F | WT_SEGD_G,
-    ['r' - 'a'] = WT_SEGD_E | WT_SEGD_G,
-    ['s' - 'a'] = WT_SEGD_A | WT_SEGD_C | WT_SEGD_D | WT_SEGD_F | WT_SEGD_G, /* same as 5/S */
-    ['t' - 'a'] = WT_SEGD_D | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
-    ['u' - 'a'] = WT_SEGD_C | WT_SEGD_D | WT_SEGD_E,
-    ['v' - 'a'] = WT_SEGD_C | WT_SEGD_D | WT_SEGD_E,                         /* same as u */
-    ['w' - 'a'] = WT_SEGD_C | WT_SEGD_D | WT_SEGD_E,                         /* approx */
-    ['x' - 'a'] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G, /* like H */
-    ['y' - 'a'] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_F | WT_SEGD_G,
-    ['z' - 'a'] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_D | WT_SEGD_E | WT_SEGD_G, /* same as 2/Z */
-};
+    [SEGD_SYM_SPACE] = WT_SEGD_NONE,
+    [SEGD_SYM_COLON] = WT_SEGD_NONE,
+    [SEGD_SYM_DASH] = WT_SEGD_G,
+    [SEGD_SYM_UNDERSCORE] = WT_SEGD_D,
+    [SEGD_SYM_EQUAL] = WT_SEGD_G | WT_SEGD_D,
+    [SEGD_SYM_DEGREE] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_F | WT_SEGD_G,
 
-/*!
-    Symbol definitions  (file-local).
-    Accessed only through wt_segd_char(); not exposed in the header.
- */
-#define S_DASH WT_SEGD_G
-#define S_UNDERSCORE WT_SEGD_D
-#define S_EQUALS (WT_SEGD_D | WT_SEGD_G)
-#define S_TILDE (WT_SEGD_A | WT_SEGD_G)
-#define S_DEGREE (WT_SEGD_A | WT_SEGD_B | WT_SEGD_F | WT_SEGD_G)
-#define S_BRACKET_L (WT_SEGD_A | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F)
-#define S_BRACKET_R (WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_D)
-#define S_PAREN_L (WT_SEGD_A | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F)
-#define S_PAREN_R (WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_D)
-#define S_APOSTROPHE WT_SEGD_F
-#define S_QUOTE (WT_SEGD_B | WT_SEGD_F)
-#define S_QUESTION (WT_SEGD_A | WT_SEGD_B | WT_SEGD_E | WT_SEGD_G)
-#define S_EXCLAIM (WT_SEGD_B | WT_SEGD_C)
-#define S_PLUS (WT_SEGD_B | WT_SEGD_C | WT_SEGD_F | WT_SEGD_G)
-#define S_SPACE WT_SEGD_NONE
+    // Digits
+    [SEGD_SYM_DIGIT_0] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F,
+    [SEGD_SYM_DIGIT_1] = WT_SEGD_B | WT_SEGD_C,
+    [SEGD_SYM_DIGIT_2] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_D | WT_SEGD_E | WT_SEGD_G,
+    [SEGD_SYM_DIGIT_3] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_G,
+    [SEGD_SYM_DIGIT_4] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_DIGIT_5] = WT_SEGD_A | WT_SEGD_C | WT_SEGD_D | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_DIGIT_6] = WT_SEGD_A | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_DIGIT_7] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C,
+    [SEGD_SYM_DIGIT_8] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_DIGIT_9] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_F | WT_SEGD_G,
+
+    // Uppercase letters
+    [SEGD_SYM_UPPER_A] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_UPPER_B] = WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_UPPER_C] = WT_SEGD_A | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F,
+    [SEGD_SYM_UPPER_D] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_G,
+    [SEGD_SYM_UPPER_E] = WT_SEGD_A | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_UPPER_F] = WT_SEGD_A | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_UPPER_G] = WT_SEGD_A | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F,
+    [SEGD_SYM_UPPER_H] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_UPPER_I] = WT_SEGD_B | WT_SEGD_C,
+    [SEGD_SYM_UPPER_J] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E,
+    [SEGD_SYM_UPPER_K] = WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_UPPER_L] = WT_SEGD_D | WT_SEGD_E | WT_SEGD_F,
+    [SEGD_SYM_UPPER_M] = WT_SEGD_A | WT_SEGD_C | WT_SEGD_E,
+    [SEGD_SYM_UPPER_N] = WT_SEGD_C | WT_SEGD_E | WT_SEGD_G,
+    [SEGD_SYM_UPPER_O] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F,
+    [SEGD_SYM_UPPER_P] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_UPPER_Q] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_UPPER_R] = WT_SEGD_E | WT_SEGD_G,
+    [SEGD_SYM_UPPER_S] = WT_SEGD_A | WT_SEGD_C | WT_SEGD_D | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_UPPER_T] = WT_SEGD_D | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_UPPER_U] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F,
+    [SEGD_SYM_UPPER_V] = WT_SEGD_C | WT_SEGD_D | WT_SEGD_E,
+    [SEGD_SYM_UPPER_W] = WT_SEGD_B | WT_SEGD_D | WT_SEGD_F,
+    [SEGD_SYM_UPPER_X] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_UPPER_Y] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_UPPER_Z] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_D | WT_SEGD_E | WT_SEGD_G,
+
+    // Lowercase letters
+    [SEGD_SYM_LOWER_A] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_G,
+    [SEGD_SYM_LOWER_B] = WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_LOWER_C] = WT_SEGD_D | WT_SEGD_E | WT_SEGD_G,
+    [SEGD_SYM_LOWER_D] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_G,
+    [SEGD_SYM_LOWER_E] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_D | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_LOWER_F] = WT_SEGD_A | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_LOWER_G] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_LOWER_H] = WT_SEGD_C | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_LOWER_I] = WT_SEGD_C,
+    [SEGD_SYM_LOWER_J] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_D,
+    [SEGD_SYM_LOWER_K] = WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_LOWER_L] = WT_SEGD_D | WT_SEGD_E | WT_SEGD_F,
+    [SEGD_SYM_LOWER_M] = WT_SEGD_A | WT_SEGD_C | WT_SEGD_E,
+    [SEGD_SYM_LOWER_N] = WT_SEGD_C | WT_SEGD_E | WT_SEGD_G,
+    [SEGD_SYM_LOWER_O] = WT_SEGD_C | WT_SEGD_D | WT_SEGD_E | WT_SEGD_G,
+    [SEGD_SYM_LOWER_P] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_LOWER_Q] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_C | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_LOWER_R] = WT_SEGD_E | WT_SEGD_G,
+    [SEGD_SYM_LOWER_S] = WT_SEGD_A | WT_SEGD_C | WT_SEGD_D | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_LOWER_T] = WT_SEGD_D | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_LOWER_U] = WT_SEGD_C | WT_SEGD_D | WT_SEGD_E,
+    [SEGD_SYM_LOWER_V] = WT_SEGD_C | WT_SEGD_D | WT_SEGD_E,
+    [SEGD_SYM_LOWER_W] = WT_SEGD_B | WT_SEGD_D | WT_SEGD_F,
+    [SEGD_SYM_LOWER_X] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_E | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_LOWER_Y] = WT_SEGD_B | WT_SEGD_C | WT_SEGD_D | WT_SEGD_F | WT_SEGD_G,
+    [SEGD_SYM_LOWER_Z] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_D | WT_SEGD_E | WT_SEGD_G,
+};
 
 /*!
     \brief  Return the segment bitmask for a single ASCII character.
-
-    \param[in]  c  ASCII character to look up.
-    \return     Segment bitmask (bits WT_SEGD_A … WT_SEGD_G).
-                Returns S_DASH for any character without a defined glyph.
  */
-uint8_t wt_segd_char(char c)
+uint8_t wt_segd_char(char ch)
 {
-    if (c >= '0' && c <= '9')
-        return s_digits[c - '0'];
-    if (c >= 'A' && c <= 'Z')
-        return s_upper[c - 'A'];
-    if (c >= 'a' && c <= 'z')
-        return s_lower[c - 'a'];
-
-    switch (c)
+    /* digits */
+    if (ch >= '0' && ch <= '9')
     {
-    case '-':
-        return S_DASH;
-    case '_':
-        return S_UNDERSCORE;
-    case '=':
-        return S_EQUALS;
-    case '~':
-        return S_TILDE;
-    case '[':
-        return S_BRACKET_L;
-    case ']':
-        return S_BRACKET_R;
-    case '(':
-        return S_PAREN_L;
-    case ')':
-        return S_PAREN_R;
-    case '\'':
-        return S_APOSTROPHE;
-    case '"':
-        return S_QUOTE;
-    case '?':
-        return S_QUESTION;
-    case '!':
-        return S_EXCLAIM;
-    case '+':
-        return S_PLUS;
-    case ' ':
-        return S_SPACE;
-    default:
-        return S_DASH;
+        return wt_segd_symbol[SEGD_SYM_DIGIT_0 + (ch - '0')];
+    }
+    else if (ch >= 'A' && ch <= 'Z')
+    {
+        return wt_segd_symbol[SEGD_SYM_UPPER_A + (ch - 'A')];
+    }
+    else if (ch >= 'a' && ch <= 'z')
+    {
+        return wt_segd_symbol[SEGD_SYM_LOWER_A + (ch - 'a')];
+    }
+    else
+    {
+        switch (ch)
+        {
+        case ':':
+            return wt_segd_symbol[SEGD_SYM_COLON];
+        case '-':
+            return wt_segd_symbol[SEGD_SYM_DASH];
+        case '_':
+            return wt_segd_symbol[SEGD_SYM_UNDERSCORE];
+        case '=':
+            return wt_segd_symbol[SEGD_SYM_EQUAL];
+        case ' ':
+            return wt_segd_symbol[SEGD_SYM_SPACE];
+        default:
+            return wt_segd_symbol[SEGD_SYM_SPACE];
+        }
     }
 }
 
 /*!
     \brief  Convert a wt_segd_request_t into a wt_segd_frame_t.
-
-    Digit ordering in the output frame is always left-to-right visually:
-      - frame->digit[0] = D4 (leftmost)
-      - frame->digit[3] = D1 (rightmost)
-
-    The LED render loop maps these visual positions to physical strip offsets.
-
-    \param[in]  req    Incoming display request.
-    \param[out] frame  Populated with per-digit segment masks and colon state.
  */
 void wt_segd_prepare_frame(const wt_segd_request_t *req, wt_segd_frame_t *frame)
 {
     switch (req->mode)
     {
-
     case WT_SEGD_MODE_NUMBER:
-    {
-        /* Integer 0-9999 split into individual decimal digits.
-           digit[0]=thousands  digit[1]=hundreds  digit[2]=tens  digit[3]=units */
-        int v = req->value;
-        if (v < 0)
-            v = 0;
-        if (v > 9999)
-            v = 9999;
-        frame->digit[0] = s_digits[v / 1000];
-        frame->digit[1] = s_digits[(v / 100) % 10];
-        frame->digit[2] = s_digits[(v / 10) % 10];
-        frame->digit[3] = s_digits[v % 10];
+        int val = req->value;
+        val = val < 0      ? 0
+              : val > 9999 ? 9999
+                           : val;
+        frame->digit[0] = wt_segd_char('0' + (val / 1000));
+        frame->digit[1] = wt_segd_char('0' + ((val / 100) % 10));
+        frame->digit[2] = wt_segd_char('0' + ((val / 10) % 10));
+        frame->digit[3] = wt_segd_char('0' + (val % 10));
         break;
-    }
 
     case WT_SEGD_MODE_TIME:
-    {
-        /* Read current system time and display as HH:MM.
-           req->value is ignored in this mode. */
         time_t now = time(NULL);
         struct tm t;
         localtime_r(&now, &t);
-        frame->digit[0] = s_digits[t.tm_hour / 10];
-        frame->digit[1] = s_digits[t.tm_hour % 10];
-        frame->digit[2] = s_digits[t.tm_min / 10];
-        frame->digit[3] = s_digits[t.tm_min % 10];
+        frame->digit[0] = wt_segd_char('0' + (t.tm_hour / 10));
+        frame->digit[1] = wt_segd_char('0' + (t.tm_hour % 10));
+        frame->digit[2] = wt_segd_char('0' + (t.tm_min / 10));
+        frame->digit[3] = wt_segd_char('0' + (t.tm_min % 10));
         break;
-    }
 
     case WT_SEGD_MODE_TEXT:
-    {
-        /* text[0]=D4(left) … text[3]=D1(right).
-           A null character in any position renders as blank. */
         for (int i = 0; i < WT_SEGD_NUM_DIGITS; i++)
         {
             frame->digit[i] = req->text[i]
@@ -223,18 +235,13 @@ void wt_segd_prepare_frame(const wt_segd_request_t *req, wt_segd_frame_t *frame)
                                   : WT_SEGD_NONE;
         }
         break;
-    }
 
     case WT_SEGD_MODE_RAW:
-    {
-        /* raw[0]=D4(left) … raw[3]=D1(right).
-           Caller supplies bitmasks directly using WT_SEGD_A … WT_SEGD_G. */
         for (int i = 0; i < WT_SEGD_NUM_DIGITS; i++)
         {
             frame->digit[i] = req->raw[i];
         }
         break;
-    }
 
     default:
         for (int i = 0; i < WT_SEGD_NUM_DIGITS; i++)

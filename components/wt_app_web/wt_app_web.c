@@ -722,7 +722,7 @@ static esp_err_t handler_settings_set(httpd_req_t *req)
         const char *hex = cJSON_GetStringValue(color);
         strlcpy(s.color_hex, hex, sizeof(s.color_hex));
         wt_settings_parse_hex_color(hex,
-                                    &s.color_on.r, &s.color_on.g, &s.color_on.b);
+                                    &s.color_on.red, &s.color_on.green, &s.color_on.blue);
     }
     cJSON *brt = cJSON_GetObjectItem(j, "brightness");
     if (brt)

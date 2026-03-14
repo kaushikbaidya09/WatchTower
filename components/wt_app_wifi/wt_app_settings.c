@@ -120,9 +120,9 @@ static void load_from_nvs(void)
     uint16_t u16 = 0;
     size_t len;
 
-    WT_NVS_GET_UINT8(WT_NVSK_COL_ON_R, wt_app_setting.color_on.r)
-    WT_NVS_GET_UINT8(WT_NVSK_COL_ON_G, wt_app_setting.color_on.g)
-    WT_NVS_GET_UINT8(WT_NVSK_COL_ON_B, wt_app_setting.color_on.b)
+    WT_NVS_GET_UINT8(WT_NVSK_COL_ON_R, wt_app_setting.color_on.red)
+    WT_NVS_GET_UINT8(WT_NVSK_COL_ON_G, wt_app_setting.color_on.green)
+    WT_NVS_GET_UINT8(WT_NVSK_COL_ON_B, wt_app_setting.color_on.blue)
     WT_NVS_GET_UINT8(WT_NVSK_INTENSITY, wt_app_setting.intensity)
     WT_NVS_GET_UINT8(WT_NVSK_ANIM, u8);
     wt_app_setting.anim = (wt_segd_anim_t)u8;
@@ -167,9 +167,9 @@ static bool save_to_nvs(const wt_settings_t *s)
         return false;
     }
 
-    nvs_set_u8(wt_nvs_h, WT_NVSK_COL_ON_R, s->color_on.r);
-    nvs_set_u8(wt_nvs_h, WT_NVSK_COL_ON_G, s->color_on.g);
-    nvs_set_u8(wt_nvs_h, WT_NVSK_COL_ON_B, s->color_on.b);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_COL_ON_R, s->color_on.red);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_COL_ON_G, s->color_on.green);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_COL_ON_B, s->color_on.blue);
     nvs_set_u8(wt_nvs_h, WT_NVSK_INTENSITY, s->intensity);
     nvs_set_u8(wt_nvs_h, WT_NVSK_ANIM, (uint8_t)s->anim);
     nvs_set_u8(wt_nvs_h, WT_NVSK_COLON_BLK, (uint8_t)s->colon_blink);

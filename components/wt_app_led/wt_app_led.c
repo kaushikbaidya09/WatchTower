@@ -1,19 +1,3 @@
-/*!
-    \file   wt_app_led.c
-    \brief  WS2812 LED render task implementation.
-
-    Owns the RMT peripheral, the pixel buffer, the shared wt_segd_queue,
-    and all animation logic.  Display content is supplied by other tasks via
-    the queue using wt_segd_request_t; the segment-to-LED mapping is
-    delegated to wt_seg_display.c.
-
-    Physical strip mapping (data-in end = LED 0):
-    \code
-     visual : D4   D3  :  D2   D1
-     LED    : 44   30  28-29  14   0
-    \endcode
- */
-
 #include "wt_app_led.h"
 #include "wt_seg_display.h"
 #include "wt_app_log.h"
@@ -26,31 +10,23 @@
 #include "esp_log.h"
 #include "driver/rmt_tx.h"
 
-/*!
-    Configuration constants
- */
-#define RMT_RESOLUTION_HZ 10000000 /*!< RMT clock 10 MHz → 1 tick = 0.1 µs   */
-#define RMT_GPIO_NUM 48            /*!< GPIO pin connected to strip data-in   */
-#define FRAME_MS 20                /*!< Render period in ms (50 fps)          */
-#define PULSE_SPEED 0.08f          /*!< Phase increment/frame, PULSE  (~1.6 s/breath) */
-#define RAINBOW_SPEED 0.04f        /*!< Phase increment/frame, RAINBOW (~3.1 s/cycle) */
-#define WAVE_HUE_STEP 20           /*!< Hue degrees between adjacent segments in WAVE */
-#define COLON_BLINK_FRAMES 25      /*!< Half-period in frames for colon blink (500 ms) */
+#define RMT_RESOLUTION_HZ 10000000 ///< RMT clock 10 MHz → 1 tick = 0.1 µs
+#define RMT_GPIO_NUM 48            ///< GPIO pin connected to strip data-in
+#define FRAME_MS 20                ///< Render period in ms (50 fps)
+#define PULSE_SPEED 0.08f          ///< Phase increment/frame, PULSE  (~1.6 s/breath)
+#define RAINBOW_SPEED 0.04f        ///< Phase increment/frame, RAINBOW (~3.1 s/cycle)
+#define WAVE_HUE_STEP 20           ///< Hue degrees between adjacent segments in WAVE
+#define COLON_BLINK_FRAMES 25      ///< Half-period in frames for colon blink (500 ms)
 
-/*!
-    Shared queue  (declared extern in wt_seg_display.h).
-    Other tasks post wt_segd_request_t items here.
- */
-QueueHandle_t wt_segd_queue = NULL;
+QueueHandle_t wt_segd_queue = NULL;                                                      ///< Shared queue
+static uint8_t s_pixels[WT_SEGD_TOTAL_LEDS * 3];                                         ///< Raw GRB byte buffer for all 58 WS2812 LEDs.
+static const uint8_t s_strip_pos_to_bit[WT_SEGD_SEGS_PER_DIGIT] = {6, 5, 0, 1, 2, 3, 4}; ///< Strip position to segment bit mapping.
+static const int s_digit_led_start[WT_SEGD_NUM_DIGITS] = {44, 30, 14, 0};                ///< Visual digit index to first LED index in the physical strip.
 
-/*!
-    Raw GRB byte buffer for all 58 WS2812 LEDs.
- */
-static uint8_t s_pixels[WT_SEGD_TOTAL_LEDS * 3];
+/* ------------------------------------------------------------------ */
+/*  WS2812 RMT timing symbols                                         */
+/* ------------------------------------------------------------------ */
 
-/*!
-    WS2812 RMT timing symbols
- */
 static const rmt_symbol_word_t s_ws2812_zero = {
     /*!< Logical 0: T0H=0.3 µs, T0L=0.9 µs */
     .level0 = 1,
@@ -74,25 +50,15 @@ static const rmt_symbol_word_t s_ws2812_reset = {
 };
 
 /*!
-    \brief  RMT simple encoder callback.
-            Serialises raw byte data into WS2812 RMT symbols, appending a
-            reset symbol after the last byte.
-
-    \param[in]  data            Pointer to the pixel byte buffer.
-    \param[in]  data_size       Size of the pixel buffer in bytes.
-    \param[in]  symbols_written Symbols already written in this transaction.
-    \param[in]  symbols_free    Space remaining in the RMT symbol buffer.
-    \param[out] symbols         Destination for encoded RMT symbols.
-    \param[out] done            Set to 1 when the reset symbol has been written.
-    \param[in]  arg             Unused user argument.
-    \return     Number of RMT symbols written this call.
+    \brief RMT encoder callback.
  */
-static size_t encoder_callback(const void *data, size_t data_size,
-                               size_t symbols_written, size_t symbols_free,
+static size_t encoder_callback(const void *data, size_t data_size, size_t symbols_written, size_t symbols_free,
                                rmt_symbol_word_t *symbols, bool *done, void *arg)
 {
     if (symbols_free < 8)
+    {
         return 0;
+    }
 
     size_t data_pos = symbols_written / 8;
     const uint8_t *bytes = (const uint8_t *)data;
@@ -112,177 +78,115 @@ static size_t encoder_callback(const void *data, size_t data_size,
     return 1;
 }
 
-/*!
-    Color helpers  (file-local)
- */
-
-/*!
-    \brief  Convert HSV to RGB.
-
-    \param[in]  h  Hue        0-359 degrees.
-    \param[in]  s  Saturation 0-255.
-    \param[in]  v  Value      0-255.
-    \return     Resulting wt_segd_color_t.
- */
-static wt_segd_color_t hsv_to_rgb(int h, uint8_t s, uint8_t v)
+static wt_segd_color_t wt_hsv_to_rgb(int hue, uint8_t sat, uint8_t val)
 {
-    wt_segd_color_t c = {0, 0, 0};
-    if (s == 0)
+    wt_segd_color_t color = {0, 0, 0};
+    if (sat == 0)
     {
-        c.r = c.g = c.b = v;
-        return c;
+        color.red = color.green = color.blue = val;
+        return color;
     }
 
-    h = ((h % 360) + 360) % 360;
-    int region = h / 60;
-    int remainder = (h - region * 60) * 255 / 60;
+    hue = ((hue % 360) + 360) % 360;
+    int region = hue / 60;
+    int remainder = (hue - region * 60) * 255 / 60;
 
-    uint8_t p = (uint16_t)v * (255 - s) >> 8;
-    uint8_t q = (uint16_t)v * (255 - ((uint16_t)s * remainder >> 8)) >> 8;
-    uint8_t t = (uint16_t)v * (255 - ((uint16_t)s * (255 - remainder) >> 8)) >> 8;
+    uint8_t p = (uint16_t)val * (255 - sat) >> 8;
+    uint8_t q = (uint16_t)val * (255 - ((uint16_t)sat * remainder >> 8)) >> 8;
+    uint8_t t = (uint16_t)val * (255 - ((uint16_t)sat * (255 - remainder) >> 8)) >> 8;
 
     switch (region)
     {
     case 0:
-        c.r = v;
-        c.g = t;
-        c.b = p;
+        color.red = val;
+        color.green = t;
+        color.blue = p;
         break;
     case 1:
-        c.r = q;
-        c.g = v;
-        c.b = p;
+        color.red = q;
+        color.green = val;
+        color.blue = p;
         break;
     case 2:
-        c.r = p;
-        c.g = v;
-        c.b = t;
+        color.red = p;
+        color.green = val;
+        color.blue = t;
         break;
     case 3:
-        c.r = p;
-        c.g = q;
-        c.b = v;
+        color.red = p;
+        color.green = q;
+        color.blue = val;
         break;
     case 4:
-        c.r = t;
-        c.g = p;
-        c.b = v;
+        color.red = t;
+        color.green = p;
+        color.blue = val;
         break;
     default:
-        c.r = v;
-        c.g = p;
-        c.b = q;
+        color.red = val;
+        color.green = p;
+        color.blue = q;
         break;
     }
-    return c;
+    return color;
 }
 
 /*!
     \brief  Scale an RGB color by a 0-255 intensity factor.
-
-    \param[in]  c          Input color.
-    \param[in]  intensity  Scale factor (0 = off, 255 = full brightness).
-    \return     Scaled color.
  */
-static wt_segd_color_t color_scale(wt_segd_color_t c, uint8_t intensity)
+static wt_segd_color_t wt_scale_color_intensity(wt_segd_color_t color, uint8_t intensity)
 {
-    c.r = (uint16_t)c.r * intensity >> 8;
-    c.g = (uint16_t)c.g * intensity >> 8;
-    c.b = (uint16_t)c.b * intensity >> 8;
-    return c;
+    color.red = (uint16_t)color.red * intensity >> 8;
+    color.green = (uint16_t)color.green * intensity >> 8;
+    color.blue = (uint16_t)color.blue * intensity >> 8;
+    return color;
 }
 
 /*!
-    \brief  Write one pixel into the GRB pixel buffer.
-
-    \param[in]  index  LED index (0-based).
-    \param[in]  c      Color to write.
+    \brief Set one pixel into the GRB pixel buffer.
  */
-static void set_led(int index, wt_segd_color_t c)
+static void wt_set_led_buf(int index, wt_segd_color_t color)
 {
-    s_pixels[index * 3 + 0] = c.g;
-    s_pixels[index * 3 + 1] = c.r;
-    s_pixels[index * 3 + 2] = c.b;
+    s_pixels[index * 3 + 0] = color.green;
+    s_pixels[index * 3 + 1] = color.red;
+    s_pixels[index * 3 + 2] = color.blue;
 }
-
-/*!
-    Strip position to segment bit mapping.
-
-    Physical strip order per digit: G  F  A  B  C  D  E  (positions 0-6)
-    Bit in mask (A=bit0 … G=bit6):  6  5  0  1  2  3  4
- */
-static const uint8_t s_strip_pos_to_bit[WT_SEGD_SEGS_PER_DIGIT] = {6, 5, 0, 1, 2, 3, 4};
-//                                                                    G  F  A  B  C  D  E
-
-/*!
-    Visual digit index to first LED index in the physical strip.
-
-    \code
-     visual index :  0     1     2     3
-     digit        :  D4    D3    D2    D1
-     LED offset   :  44    30    14     0
-    \endcode
- */
-static const int s_digit_led_start[WT_SEGD_NUM_DIGITS] = {44, 30, 14, 0};
 
 /*!
     \brief  Render one digit into the pixel buffer.
-
-    Applies the active animation and color to each segment LED pair of the
-    specified visual digit position.
-
-    \param[in]  visual_index  0 = D4 (leftmost) … 3 = D1 (rightmost).
-    \param[in]  seg_mask      Segment bitmask (WT_SEGD_A … WT_SEGD_G).
-    \param[in]  req           Current display request (color / animation).
-    \param[in]  phase         Current animation phase in radians (0 … 2π).
  */
-static void render_digit(int visual_index, uint8_t seg_mask,
-                         const wt_segd_request_t *req, float phase)
+static void render_digit(int visual_index, uint8_t seg_mask, const wt_segd_request_t *req, float phase)
 {
     int led_offset = s_digit_led_start[visual_index];
 
     for (int i = 0; i < WT_SEGD_SEGS_PER_DIGIT; i++)
     {
-
         bool on = (seg_mask >> s_strip_pos_to_bit[i]) & 0x01;
         wt_segd_color_t color;
 
         if (on)
         {
+            int hue = 0;
             switch (req->anim)
             {
-
             case WT_SEGD_ANIM_SOLID:
-                color = color_scale(req->color_on, req->intensity);
+                color = wt_scale_color_intensity(req->color_on, req->intensity);
                 break;
-
             case WT_SEGD_ANIM_PULSE:
-            {
                 float b = sinf(phase) * 0.5f + 0.5f;
-                color = color_scale(req->color_on, (uint8_t)(b * req->intensity));
+                color = wt_scale_color_intensity(req->color_on, (uint8_t)(b * req->intensity));
                 break;
-            }
-
             case WT_SEGD_ANIM_RAINBOW:
-            {
-                int hue = (int)(phase * (360.0f / (2.0f * (float)M_PI))) % 360;
-                color = hsv_to_rgb(hue, 255, req->intensity);
+                hue = (int)(phase * (360.0f / (2.0f * (float)M_PI))) % 360;
+                color = wt_hsv_to_rgb(hue, 255, req->intensity);
                 break;
-            }
-
             case WT_SEGD_ANIM_WAVE:
-            {
-                /* Each segment receives a hue offset proportional to its
-                   global position across the full strip, producing a
-                   left-to-right colour wave. */
                 int global_seg = visual_index * WT_SEGD_SEGS_PER_DIGIT + i;
-                int hue = ((int)(phase * (360.0f / (2.0f * (float)M_PI))) + global_seg * WAVE_HUE_STEP) % 360;
-                color = hsv_to_rgb(hue, 255, req->intensity);
+                hue = ((int)(phase * (360.0f / (2.0f * (float)M_PI))) + global_seg * WAVE_HUE_STEP) % 360;
+                color = wt_hsv_to_rgb(hue, 255, req->intensity);
                 break;
-            }
-
             default:
-                color = color_scale(req->color_on, req->intensity);
+                color = wt_scale_color_intensity(req->color_on, req->intensity);
                 break;
             }
         }
@@ -292,8 +196,8 @@ static void render_digit(int visual_index, uint8_t seg_mask,
         }
 
         int base = led_offset + i * WT_SEGD_LEDS_PER_SEG;
-        set_led(base, color);
-        set_led(base + 1, color);
+        wt_set_led_buf(base, color);
+        wt_set_led_buf(base + 1, color);
     }
 }
 
@@ -315,18 +219,18 @@ static void render_colon(bool on, const wt_segd_request_t *req, float phase)
         case WT_SEGD_ANIM_PULSE:
         {
             float b = sinf(phase) * 0.5f + 0.5f;
-            color = color_scale(req->color_on, (uint8_t)(b * req->intensity));
+            color = wt_scale_color_intensity(req->color_on, (uint8_t)(b * req->intensity));
             break;
         }
         case WT_SEGD_ANIM_RAINBOW:
         case WT_SEGD_ANIM_WAVE:
         {
             int hue = (int)(phase * (360.0f / (2.0f * (float)M_PI))) % 360;
-            color = hsv_to_rgb(hue, 255, req->intensity);
+            color = wt_hsv_to_rgb(hue, 255, req->intensity);
             break;
         }
         default:
-            color = color_scale(req->color_on, req->intensity);
+            color = wt_scale_color_intensity(req->color_on, req->intensity);
             break;
         }
     }
@@ -335,8 +239,8 @@ static void render_colon(bool on, const wt_segd_request_t *req, float phase)
         color = req->color_off;
     }
 
-    set_led(WT_SEGD_COLON_LED_OFFSET, color);
-    set_led(WT_SEGD_COLON_LED_OFFSET + 1, color);
+    wt_set_led_buf(WT_SEGD_COLON_LED_OFFSET, color);
+    wt_set_led_buf(WT_SEGD_COLON_LED_OFFSET + 1, color);
 }
 
 /*!
@@ -368,9 +272,9 @@ void wt_task_led(void *pvParameter)
     };
     ESP_ERROR_CHECK(rmt_new_tx_channel(&tx_cfg, &led_chan));
 
-    rmt_encoder_handle_t encoder = NULL;
+    rmt_encoder_handle_t rtm_encoder_h = NULL;
     rmt_simple_encoder_config_t enc_cfg = {.callback = encoder_callback};
-    ESP_ERROR_CHECK(rmt_new_simple_encoder(&enc_cfg, &encoder));
+    ESP_ERROR_CHECK(rmt_new_simple_encoder(&enc_cfg, &rtm_encoder_h));
     ESP_ERROR_CHECK(rmt_enable(led_chan));
 
     rmt_transmit_config_t tx_config = {.loop_count = 0};
@@ -426,7 +330,7 @@ void wt_task_led(void *pvParameter)
         render_colon(colon_on, &current, phase);
 
         /* Transmit pixel buffer over RMT */
-        ESP_ERROR_CHECK(rmt_transmit(led_chan, encoder,
+        ESP_ERROR_CHECK(rmt_transmit(led_chan, rtm_encoder_h,
                                      s_pixels, sizeof(s_pixels), &tx_config));
         ESP_ERROR_CHECK(rmt_tx_wait_all_done(led_chan, portMAX_DELAY));
 
@@ -446,71 +350,3 @@ void wt_task_led(void *pvParameter)
         tick++;
     }
 }
-
-/*!
-    Usage examples for other tasks
-
-    Seconds counter (MM:SS):
-    \code
-     void counter_task(void *pv) {
-         int secs = 0;
-         while (1) {
-             wt_segd_request_t req = {
-                 .mode        = WT_SEGD_MODE_TIME,
-                 .value       = secs,
-                 .colon       = true,
-                 .colon_blink = true,
-                 .anim        = WT_SEGD_ANIM_PULSE,
-                 .color_on    = WT_SEGD_CYAN,
-                 .color_off   = WT_SEGD_OFF,
-                 .intensity   = 220,
-             };
-             if (wt_segd_queue) xQueueOverwrite(wt_segd_queue, &req);
-             secs = (secs + 1) % 6000;
-             vTaskDelay(pdMS_TO_TICKS(1000));
-         }
-     }
-    \endcode
-
-    4-digit number:
-    \code
-     wt_segd_request_t req = {
-         .mode      = WT_SEGD_MODE_NUMBER,
-         .value     = 1234,
-         .colon     = true,
-         .anim      = WT_SEGD_ANIM_RAINBOW,
-         .color_on  = WT_SEGD_WHITE,
-         .color_off = WT_SEGD_OFF,
-         .intensity = 255,
-     };
-     xQueueOverwrite(wt_segd_queue, &req);
-    \endcode
-
-    4-character text (D4=H  D3=E  D2=L  D1=o):
-    \code
-     wt_segd_request_t req = {
-         .mode      = WT_SEGD_MODE_TEXT,
-         .text      = "HELo",
-         .colon     = false,
-         .anim      = WT_SEGD_ANIM_WAVE,
-         .color_on  = WT_SEGD_ORANGE,
-         .color_off = WT_SEGD_OFF,
-         .intensity = 200,
-     };
-     xQueueOverwrite(wt_segd_queue, &req);
-    \endcode
-
-    Raw segment control:
-    \code
-     wt_segd_request_t req = {
-         .mode = WT_SEGD_MODE_RAW,
-         .raw  = {
-             WT_SEGD_A | WT_SEGD_G | WT_SEGD_D,   // D4 custom
-             WT_SEGD_B | WT_SEGD_C,               // D3 custom
-             WT_SEGD_NONE,                         // D2 blank
-             WT_SEGD_A | WT_SEGD_B | WT_SEGD_F,   // D1 custom
-         },
-     };
-     xQueueOverwrite(wt_segd_queue, &req);
-    \endcode
- */

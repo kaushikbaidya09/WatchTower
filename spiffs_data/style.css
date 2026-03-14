@@ -368,6 +368,11 @@ body {
   box-shadow: var(--shadow);
 }
 
+.disp-bezel canvas,
+.prev-frame canvas {
+  display: block;
+}
+
 .disp-bezel {
   position: relative;
   overflow: hidden;
@@ -887,18 +892,80 @@ select {
 .slider {
   width: 100%;
   appearance: none;
-  height: 5px;
+  -webkit-appearance: none;
+  height: 10px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(
+      90deg,
+      var(--accent) 0%,
+      var(--accent) var(--pct, 80%),
+      rgba(255, 255, 255, 0.08) var(--pct, 80%),
+      rgba(255, 255, 255, 0.08) 100%
+    );
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  outline: none;
+}
+
+.slider::-webkit-slider-runnable-track {
+  height: 10px;
+  background: transparent;
+}
+
+.slider::-moz-range-track {
+  height: 10px;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.slider::-moz-range-progress {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--accent);
 }
 
 .slider::-webkit-slider-thumb {
   appearance: none;
-  width: 16px;
-  height: 16px;
+  margin-top: -4px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
-  background: var(--accent);
-  border: 2px solid #dff6ff;
+  background: #f4fbff;
+  border: 2px solid var(--accent);
+  box-shadow:
+    0 0 0 3px rgba(36, 194, 255, 0.14),
+    0 3px 10px rgba(0, 0, 0, 0.28);
+}
+
+.slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #f4fbff;
+  border: 2px solid var(--accent);
+  box-shadow:
+    0 0 0 3px rgba(36, 194, 255, 0.14),
+    0 3px 10px rgba(0, 0, 0, 0.28);
+}
+
+.brt-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.brt-mark {
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.disp-actions {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 4px;
 }
 
 .clr-row {
@@ -1227,6 +1294,12 @@ input[type="color"] {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.pi-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .pi-name {

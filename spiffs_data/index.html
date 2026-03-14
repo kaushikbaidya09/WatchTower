@@ -42,9 +42,9 @@
         </button>
         <button class="nb" data-page="settings" onclick="showPage('settings')">
           <svg viewBox="0 0 20 20">
-            <circle cx="10" cy="10" r="3" />
+            <circle cx="10" cy="10" r="2.6" />
             <path
-              d="M10 2v2M10 16v2M2 10h2M16 10h2M4.1 4.1l1.4 1.4M14.5 14.5l1.4 1.4M4.1 15.9l1.4-1.4M14.5 5.5l1.4-1.4"
+              d="M10 1.8l1 1.1 1.5-.2.6 1.4 1.4.6-.2 1.5 1.1 1-1.1 1 .2 1.5-1.4.6-.6 1.4-1.5-.2-1 1.1-1-1.1-1.5.2-.6-1.4-1.4-.6.2-1.5-1.1-1 1.1-1-.2-1.5 1.4-.6.6-1.4 1.5.2z"
             />
           </svg>
           <span>Settings</span>
@@ -97,7 +97,6 @@
           <div class="disp-card">
             <div class="disp-bezel">
               <canvas id="vd-canvas" width="500" height="110"></canvas>
-              <div class="scanlines"></div>
             </div>
             <div class="disp-meta">
               <span id="dinfo-fmt">24H</span>
@@ -297,6 +296,11 @@
                   <td class="mono" id="i-reset">&#8212;</td>
                 </tr>
               </table>
+              <div class="disp-actions" style="margin-top: 18px">
+                <button class="bghost" onclick="rebootDevice()">
+                  Reboot Device
+                </button>
+              </div>
             </div>
 
             <!-- FIRMWARE -->
@@ -471,6 +475,35 @@
               <div class="dp-layout">
                 <div class="dp-ctrls">
                   <div class="fg">
+                    <label>Display Mode</label>
+                    <select id="dp-mode" onchange="onDispChange()">
+                      <option value="time">Clock</option>
+                      <option value="number">Number</option>
+                      <option value="text">Text</option>
+                    </select>
+                  </div>
+                  <div class="fg" id="dp-value-wrap">
+                    <label>Number Value</label>
+                    <input
+                      type="number"
+                      id="dp-value"
+                      min="0"
+                      max="9999"
+                      value="1234"
+                      oninput="onDispChange()"
+                    />
+                  </div>
+                  <div class="fg" id="dp-text-wrap">
+                    <label>Display Text</label>
+                    <input
+                      type="text"
+                      id="dp-text"
+                      maxlength="4"
+                      value="HELO"
+                      oninput="this.value = this.value.toUpperCase().replace(/[^A-Z0-9 _-]/g, '').slice(0, 4); onDispChange();"
+                    />
+                  </div>
+                  <div class="fg">
                     <label>Display Color</label>
                     <div class="clr-row">
                       <input
@@ -528,19 +561,20 @@
                       >Brightness
                       <span class="pill" id="brt-val">80%</span></label
                     >
-                    <input
-                      type="range"
-                      class="slider"
-                      id="dp-brt"
-                      min="0"
-                      max="100"
-                      value="80"
-                      oninput="
-                        document.getElementById('brt-val').textContent =
-                          this.value + '%';
-                        onDispChange();
-                      "
-                    />
+                    <div class="brt-row">
+                      <span class="brt-mark mono">MIN</span>
+                      <input
+                        type="range"
+                        class="slider slider-brt"
+                        id="dp-brt"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value="80"
+                        oninput="onDispChange()"
+                      />
+                      <span class="brt-mark mono">MAX</span>
+                    </div>
                   </div>
                   <div class="fg">
                     <label>Effects</label>
@@ -590,12 +624,21 @@
                       <option value="rainbow">Rainbow Cycle</option>
                     </select>
                   </div>
+                  <div class="disp-actions">
+                    <button class="bpri" onclick="forceSendDispSettings()">
+                      Set Display
+                    </button>
+                  </div>
                 </div>
                 <div class="dp-prev">
-                  <div class="prev-lbl">LIVE PREVIEW</div>
+                  <div class="pb-hdr">
+                    <span class="prev-lbl">LIVE PREVIEW</span>
+                    <button class="bsm" onclick="manualDisplayRefresh()">
+                      Refresh Preview
+                    </button>
+                  </div>
                   <div class="prev-frame">
                     <canvas id="prev-canvas" width="300" height="76"></canvas>
-                    <div class="scanlines"></div>
                   </div>
                   <p class="prev-hint">Changes auto-save to device instantly</p>
                 </div>

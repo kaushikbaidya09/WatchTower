@@ -16,6 +16,10 @@ const S = {
   logs: [],
   lastSeq: 0,
   wifi: null,
+  display: null,
+  displayMode: "time",
+  displayValue: 1234,
+  displayText: "HELO",
   timers: {},
 };
 const _db = {};
@@ -73,8 +77,20 @@ function fmtUptime(s) {
 function pad2(n) {
   return String(n).padStart(2, "0");
 }
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
 function esc(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function updateBrightnessUi(v) {
+  const value = clamp(parseInt(v, 10) || 0, 0, 100);
+  const slider = el("dp-brt");
+  if (slider) {
+    slider.value = String(value);
+    slider.style.setProperty("--pct", value + "%");
+  }
+  setText("brt-val", value + "%");
 }
 function toast(msg, type, ms) {
   type = type || "info";
@@ -94,20 +110,25 @@ function toast(msg, type, ms) {
 }
 
 /* ═══════════════════════════════════════════
-   7-SEGMENT RENDERER — HH:MM only, wide segs
+   7-SEGMENT RENDERER — device-backed masks
 ═══════════════════════════════════════════ */
-const SEG_PAT = [
-  [1, 1, 1, 1, 1, 1, 0],
-  [0, 1, 1, 0, 0, 0, 0],
-  [1, 1, 0, 1, 1, 0, 1],
-  [1, 1, 1, 1, 0, 0, 1],
-  [0, 1, 1, 0, 0, 1, 1],
-  [1, 0, 1, 1, 0, 1, 1],
-  [1, 0, 1, 1, 1, 1, 1],
-  [1, 1, 1, 0, 0, 0, 0],
-  [1, 1, 1, 1, 1, 1, 1],
-  [1, 1, 1, 1, 0, 1, 1],
-];
+const SEG_BIT = { A: 1 << 0, B: 1 << 1, C: 1 << 2, D: 1 << 3, E: 1 << 4, F: 1 << 5, G: 1 << 6 };
+const MASK_TO_CHAR = {
+  0: " ",
+  63: "0",
+  6: "1",
+  91: "2",
+  79: "3",
+  102: "4",
+  109: "5",
+  125: "6",
+  7: "7",
+  127: "8",
+  111: "9",
+  64: "-",
+  8: "_",
+  72: "=",
+};
 function hSeg(ctx, x, y, w, th, r) {
   if (w <= 0) return;
   ctx.beginPath();
@@ -132,11 +153,10 @@ function vSeg(ctx, x, y, tw, h, r) {
   ctx.closePath();
   ctx.fill();
 }
-function drawDigit(ctx, digit, x, y, dw, dh, color, alpha) {
+function drawMask(ctx, mask, x, y, dw, dh, color, alpha) {
   alpha = alpha !== undefined ? alpha : 1;
-  const p = SEG_PAT[digit] || SEG_PAT[0];
-  const sw = Math.max(5, Math.round(dw * 0.13));
-  const g = Math.max(2, Math.round(sw * 0.5));
+  const sw = Math.max(4, Math.round(dw * 0.11));
+  const g = Math.max(4, Math.round(sw * 0.95));
   const r = Math.round(sw * 0.38);
   const hl = dw - g * 2 - sw,
     vl = dh / 2 - g - sw * 0.5;
@@ -144,89 +164,101 @@ function drawDigit(ctx, digit, x, y, dw, dh, color, alpha) {
     ctx.globalAlpha = on ? alpha : alpha * 0.05;
     ctx.fillStyle = color;
   };
-  sa(p[0]);
+  sa((mask & SEG_BIT.A) !== 0);
   hSeg(ctx, x + g + sw / 2, y + g, hl, sw, r);
-  sa(p[1]);
+  sa((mask & SEG_BIT.B) !== 0);
   vSeg(ctx, x + dw - g - sw, y + g + sw / 2, sw, vl, r);
-  sa(p[2]);
+  sa((mask & SEG_BIT.C) !== 0);
   vSeg(ctx, x + dw - g - sw, y + dh / 2 + sw / 2, sw, vl, r);
-  sa(p[3]);
+  sa((mask & SEG_BIT.D) !== 0);
   hSeg(ctx, x + g + sw / 2, y + dh - g - sw, hl, sw, r);
-  sa(p[4]);
+  sa((mask & SEG_BIT.E) !== 0);
   vSeg(ctx, x + g, y + dh / 2 + sw / 2, sw, vl, r);
-  sa(p[5]);
+  sa((mask & SEG_BIT.F) !== 0);
   vSeg(ctx, x + g, y + g + sw / 2, sw, vl, r);
-  sa(p[6]);
+  sa((mask & SEG_BIT.G) !== 0);
   hSeg(ctx, x + g + sw / 2, y + dh / 2 - sw / 2, hl, sw, r);
   ctx.globalAlpha = 1;
 }
-function renderClock(cid, opts) {
+function rgbTripletToCss(rgb) {
+  if (!rgb || rgb.length !== 3) return S.color;
+  return "rgb(" + rgb[0] + "," + rgb[1] + "," + rgb[2] + ")";
+}
+function drawMaskExact(ctx, mask, segColors, x, y, dw, dh) {
+  const sw = Math.max(4, Math.round(dw * 0.11));
+  const g = Math.max(4, Math.round(sw * 0.95));
+  const r = Math.round(sw * 0.38);
+  const hl = dw - g * 2 - sw,
+    vl = dh / 2 - g - sw * 0.5;
+  const seg = function (bit, color, painter) {
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 1;
+    painter();
+  };
+  seg(SEG_BIT.A, rgbTripletToCss(segColors && segColors[0]), function () {
+    hSeg(ctx, x + g + sw / 2, y + g, hl, sw, r);
+  });
+  seg(SEG_BIT.B, rgbTripletToCss(segColors && segColors[1]), function () {
+    vSeg(ctx, x + dw - g - sw, y + g + sw / 2, sw, vl, r);
+  });
+  seg(SEG_BIT.C, rgbTripletToCss(segColors && segColors[2]), function () {
+    vSeg(ctx, x + dw - g - sw, y + dh / 2 + sw / 2, sw, vl, r);
+  });
+  seg(SEG_BIT.D, rgbTripletToCss(segColors && segColors[3]), function () {
+    hSeg(ctx, x + g + sw / 2, y + dh - g - sw, hl, sw, r);
+  });
+  seg(SEG_BIT.E, rgbTripletToCss(segColors && segColors[4]), function () {
+    vSeg(ctx, x + g, y + dh / 2 + sw / 2, sw, vl, r);
+  });
+  seg(SEG_BIT.F, rgbTripletToCss(segColors && segColors[5]), function () {
+    vSeg(ctx, x + g, y + g + sw / 2, sw, vl, r);
+  });
+  seg(SEG_BIT.G, rgbTripletToCss(segColors && segColors[6]), function () {
+    hSeg(ctx, x + g + sw / 2, y + dh / 2 - sw / 2, hl, sw, r);
+  });
+  ctx.globalAlpha = 1;
+}
+function displayText(state) {
+  if (!state || !state.digits) return "--:--";
+  const chars = state.digits.map(function (mask) {
+    return Object.prototype.hasOwnProperty.call(MASK_TO_CHAR, mask)
+      ? MASK_TO_CHAR[mask]
+      : "?";
+  });
+  return chars[0] + chars[1] + (state.colon ? ":" : " ") + chars[2] + chars[3];
+}
+function renderDisplay(cid, opts) {
   const canvas = el(cid);
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
   const W = canvas.width,
     H = canvas.height;
-  const color = (opts && opts.color) || S.color;
-  const brt = (opts && opts.brt != null ? opts.brt : S.brightness) / 100;
-  const fmt24 = opts && opts.fmt != null ? opts.fmt === 24 : S.fmt === 24;
-  const colon = opts && opts.colon != null ? opts.colon : S.colonOn;
-  const pulse = opts && opts.pulse != null ? opts.pulse : S.pulse;
+  const state = opts || S.display || {};
+  const color = state.color || S.color;
+  const brt = (state.brightness != null ? state.brightness : S.brightness) / 100;
+  const colon = state.colon != null ? state.colon : S.colonOn;
+  const digits =
+    state.digits && state.digits.length === 4 ? state.digits : [0, 0, 0, 0];
+  const digitColors = state.digit_colors || null;
+  const colonColor = state.colon_color || null;
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = "#050508";
   ctx.fillRect(0, 0, W, H);
-  if (pulse) {
-    const p2 = 0.5 + 0.5 * Math.sin(Date.now() / 600);
-    const hex = color.replace("#", "");
-    const rc = parseInt(hex.slice(0, 2), 16),
-      gc = parseInt(hex.slice(2, 4), 16),
-      bc = parseInt(hex.slice(4, 6), 16);
-    const gr = ctx.createRadialGradient(
-      W / 2,
-      H / 2,
-      0,
-      W / 2,
-      H / 2,
-      W * 0.55,
-    );
-    gr.addColorStop(
-      0,
-      "rgba(" + rc + "," + gc + "," + bc + "," + 0.12 * p2 + ")",
-    );
-    gr.addColorStop(1, "transparent");
-    ctx.fillStyle = gr;
-    ctx.fillRect(0, 0, W, H);
-  }
-  const now = new Date();
-  let hh = now.getHours(),
-    mm = now.getMinutes(),
-    ampm = "";
-  if (!fmt24) {
-    ampm = hh >= 12 ? "PM" : "AM";
-    hh = hh % 12 || 12;
-  }
-  const h1 = fmt24 ? Math.floor(hh / 10) : hh >= 10 ? Math.floor(hh / 10) : -1;
-  const h2 = hh % 10,
-    m1 = Math.floor(mm / 10),
-    m2 = mm % 10;
   const DH = Math.floor(H * 0.84),
     DW = Math.floor(DH * 0.68),
     CW = Math.floor(DW * 0.3);
-  const amW = ampm ? Math.floor(DH * 0.28) + 6 : 0;
-  const showH1 = h1 >= 0;
-  const totalW = (showH1 ? DW + 4 : 0) + DW + 4 + CW + DW + 4 + DW + amW;
+  const totalW = DW + 4 + DW + 4 + CW + DW + 4 + DW;
   let cx = Math.round((W - totalW) / 2);
   const cy = Math.round((H - DH) / 2);
-  ctx.shadowBlur = Math.round(20 * brt);
-  ctx.shadowColor = color;
-  if (showH1) {
-    drawDigit(ctx, h1, cx, cy, DW, DH, color, brt);
-    cx += DW + 4;
-  }
-  drawDigit(ctx, h2, cx, cy, DW, DH, color, brt);
+  if (digitColors) drawMaskExact(ctx, digits[0], digitColors[0], cx, cy, DW, DH);
+  else drawMask(ctx, digits[0], cx, cy, DW, DH, color, brt);
+  cx += DW + 4;
+  if (digitColors) drawMaskExact(ctx, digits[1], digitColors[1], cx, cy, DW, DH);
+  else drawMask(ctx, digits[1], cx, cy, DW, DH, color, brt);
   cx += DW + 4;
   if (colon) {
-    ctx.fillStyle = color;
-    ctx.globalAlpha = brt;
+    ctx.fillStyle = rgbTripletToCss(colonColor) || color;
+    ctx.globalAlpha = digitColors ? 1 : brt;
     const dr = Math.max(3, Math.round(DH * 0.057));
     ctx.beginPath();
     ctx.arc(cx + CW / 2, cy + DH * 0.29, dr, 0, Math.PI * 2);
@@ -237,20 +269,11 @@ function renderClock(cid, opts) {
     ctx.globalAlpha = 1;
   }
   cx += CW;
-  drawDigit(ctx, m1, cx, cy, DW, DH, color, brt);
+  if (digitColors) drawMaskExact(ctx, digits[2], digitColors[2], cx, cy, DW, DH);
+  else drawMask(ctx, digits[2], cx, cy, DW, DH, color, brt);
   cx += DW + 4;
-  drawDigit(ctx, m2, cx, cy, DW, DH, color, brt);
-  cx += DW + 6;
-  if (ampm) {
-    ctx.shadowBlur = 8;
-    ctx.fillStyle = color;
-    ctx.globalAlpha = brt * 0.75;
-    ctx.font = "bold " + Math.floor(DH * 0.22) + "px 'Bebas Neue',monospace";
-    ctx.textBaseline = "middle";
-    ctx.fillText(ampm, cx, cy + DH / 2);
-    ctx.globalAlpha = 1;
-  }
-  ctx.shadowBlur = 0;
+  if (digitColors) drawMaskExact(ctx, digits[3], digitColors[3], cx, cy, DW, DH);
+  else drawMask(ctx, digits[3], cx, cy, DW, DH, color, brt);
 }
 function resizeCanvas(cid) {
   const canvas = el(cid);
@@ -268,23 +291,10 @@ function resizeAll() {
   resizeCanvas("vd-canvas");
   resizeCanvas("prev-canvas");
 }
-let _cf = 0;
 function tick() {
-  _cf++;
-  const blinkOn = el("dp-blink") ? el("dp-blink").checked : true;
-  S.colonOn = blinkOn ? _cf % 2 === 0 : true;
-  const now = new Date();
-  setText(
-    "live-time",
-    pad2(now.getHours()) +
-      ":" +
-      pad2(now.getMinutes()) +
-      ":" +
-      pad2(now.getSeconds()),
-  );
   resizeAll();
-  renderClock("vd-canvas");
-  renderClock("prev-canvas");
+  renderDisplay("vd-canvas");
+  renderDisplay("prev-canvas");
 }
 
 /* ═════ PAGE / SECTION NAV ════════════════ */
@@ -328,7 +338,7 @@ function showSec(id) {
   if (id === "power") refreshPower();
   if (id === "display") {
     resizeCanvas("prev-canvas");
-    renderClock("prev-canvas");
+    renderDisplay("prev-canvas");
   }
   try {
     localStorage.setItem("wt-sec", id);
@@ -367,14 +377,45 @@ async function refreshDash() {
   updateDispInfo();
 }
 function updateDispInfo() {
-  setText("dinfo-fmt", S.fmt === 24 ? "24H" : "12H");
-  setText("dinfo-blink", S.blink ? "BLINK ON" : "BLINK OFF");
+  const st = S.display;
+  setText(
+    "dinfo-fmt",
+    st && st.mode ? st.mode.toUpperCase() : S.displayMode.toUpperCase(),
+  );
+  setText(
+    "dinfo-blink",
+    st ? (st.colon_blink ? "BLINK ON" : "BLINK OFF") : S.blink ? "BLINK ON" : "BLINK OFF",
+  );
   setText("dinfo-brt", "BRT " + S.brightness + "%");
   const dc = el("dinfo-color");
   if (dc) {
     dc.textContent = "● " + S.color.toUpperCase();
     dc.style.color = S.color;
   }
+}
+function syncDisplayModeInputs() {
+  const mode = (el("dp-mode") && el("dp-mode").value) || S.displayMode || "time";
+  const vw = el("dp-value-wrap");
+  const tw = el("dp-text-wrap");
+  if (vw) vw.style.display = mode === "number" ? "" : "none";
+  if (tw) tw.style.display = mode === "text" ? "" : "none";
+}
+
+async function refreshDisplay() {
+  const d = await apiGet("/api/display");
+  if (!d || d.available === false) return;
+  S.display = d;
+  if (d.mode) S.displayMode = d.mode;
+  if (d.brightness != null) S.brightness = d.brightness;
+  setText("live-time", displayText(d));
+  updateDispInfo();
+  resizeAll();
+  renderDisplay("vd-canvas");
+  renderDisplay("prev-canvas");
+}
+async function manualDisplayRefresh() {
+  await Promise.allSettled([loadSettings(), refreshDisplay()]);
+  toast("Display refreshed", "ok", 1200);
 }
 
 /* ═════ SYSTEM ════════════════════════════ */
@@ -422,7 +463,7 @@ async function refreshFW() {
 async function doRefresh(silent) {
   const activePage = document.querySelector(".page.active");
   const activeSec = document.querySelector(".snb.active");
-  const jobs = [refreshDash()];
+  const jobs = [refreshDash(), refreshDisplay()];
   if (activePage && activePage.id === "pg-settings") {
     const sid = activeSec ? activeSec.dataset.s : "sys";
     if (sid === "sys") jobs.push(refreshSys());
@@ -431,7 +472,7 @@ async function doRefresh(silent) {
     if (sid === "power") jobs.push(refreshPower());
     if (sid === "wifi") jobs.push(refreshWifi());
     if (sid === "display")
-      jobs.push(Promise.resolve(renderClock("prev-canvas")));
+      jobs.push(refreshDisplay());
   }
   await Promise.allSettled(jobs);
   tick();
@@ -521,8 +562,20 @@ function onDispChange() {
   S.scroll = el("dp-scroll") ? el("dp-scroll").checked : false;
   S.pulse = el("dp-pulse") ? el("dp-pulse").checked : false;
   S.transition = el("dp-trans") ? el("dp-trans").checked : true;
-  const bv = el("brt-val");
-  if (bv) bv.textContent = S.brightness + "%";
+  S.displayMode = (el("dp-mode") && el("dp-mode").value) || "time";
+  S.displayValue = clamp(
+    parseInt((el("dp-value") && el("dp-value").value) || "0", 10) || 0,
+    0,
+    9999,
+  );
+  S.displayText = ((el("dp-text") && el("dp-text").value) || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9 _-]/g, "")
+    .slice(0, 4);
+  updateBrightnessUi(S.brightness);
+  if (el("dp-value")) el("dp-value").value = String(S.displayValue);
+  if (el("dp-text")) el("dp-text").value = S.displayText;
+  syncDisplayModeInputs();
   markActiveSwatch();
   updateDispInfo();
   debounce("disp", sendDispSettings, 400);
@@ -537,8 +590,20 @@ async function sendDispSettings() {
     anim_pulse: S.pulse,
     anim_transition: S.transition,
     reaction_effect: react ? react.value : "none",
+    display_mode: S.displayMode,
+    display_value: S.displayValue,
+    display_text: S.displayText,
   });
-  if (r && r.status === "ok") toast("Display updated", "ok");
+  if (r && r.status === "ok") {
+    await refreshDisplay();
+    toast("Display updated", "ok");
+  }
+}
+async function forceSendDispSettings() {
+  clearTimeout(_db.disp);
+  onDispChange();
+  clearTimeout(_db.disp);
+  await sendDispSettings();
 }
 function pickColor(hex) {
   const p = el("dp-color");
@@ -588,6 +653,16 @@ async function syncNTP() {
     toast("NTP sync triggered", "ok");
     setText("ntp-hint", "Last sync: " + new Date().toLocaleTimeString());
   } else toast("NTP sync failed", "err");
+}
+async function rebootDevice() {
+  const ok = window.confirm("Reboot the device now?");
+  if (!ok) return;
+  const r = await apiPost("/api/reboot", {});
+  if (r && (r.ok || r.status === "ok")) {
+    toast("Rebooting device…", "ok", 2200);
+  } else {
+    toast("Reboot failed", "err");
+  }
 }
 
 /* ═════ POWER ════════════════════════════ */
@@ -679,9 +754,14 @@ function renderProfiles(profiles) {
       esc(p.ssid) +
       "</span>" +
       (active ? '<span class="pi-badge">CONNECTED</span>' : "") +
+      '<div class="pi-actions">' +
+      (!active
+        ? '<button class="bsm" onclick="connectProfile(' + i + ')">Connect</button>'
+        : "") +
       '<button class="pi-del" onclick="delProfile(' +
       i +
-      ')">Remove</button>';
+      ')">Remove</button>' +
+      "</div>";
     c.appendChild(div);
   });
 }
@@ -715,6 +795,13 @@ async function delProfile(idx) {
     toast("Profile removed", "ok");
     await refreshWifi();
   } else toast("Failed", "err");
+}
+async function connectProfile(idx) {
+  const r = await apiPost("/api/wifi/connect", { index: idx });
+  if (r && r.status === "ok") {
+    toast("Connecting…", "ok");
+    await refreshWifi();
+  } else toast("Connect failed", "err");
 }
 function togglePw() {
   const f = el("new-pass");
@@ -809,8 +896,19 @@ async function loadSettings() {
   }
   if (d.brightness != null) {
     S.brightness = d.brightness;
-    if (el("dp-brt")) el("dp-brt").value = d.brightness;
-    setText("brt-val", d.brightness + "%");
+    updateBrightnessUi(d.brightness);
+  }
+  if (d.display_mode) {
+    S.displayMode = d.display_mode;
+    if (el("dp-mode")) el("dp-mode").value = d.display_mode;
+  }
+  if (d.display_value != null) {
+    S.displayValue = d.display_value;
+    if (el("dp-value")) el("dp-value").value = d.display_value;
+  }
+  if (d.display_text != null) {
+    S.displayText = d.display_text;
+    if (el("dp-text")) el("dp-text").value = d.display_text;
   }
   if (d.time_format) {
     S.fmt = d.time_format;
@@ -847,6 +945,7 @@ async function loadSettings() {
   if (d.batt_alert_pct != null && el("batt-alert"))
     el("batt-alert").value = d.batt_alert_pct;
   markActiveSwatch();
+  syncDisplayModeInputs();
   updateDispInfo();
 }
 
@@ -872,14 +971,16 @@ async function init() {
   setupDnD();
   window.addEventListener("resize", function () {
     resizeAll();
-    renderClock("vd-canvas");
-    renderClock("prev-canvas");
+    renderDisplay("vd-canvas");
+    renderDisplay("prev-canvas");
   });
   await loadSettings();
+  updateBrightnessUi(S.brightness);
   initNavState();
   await doRefresh(true);
   startLogPoll();
   S.timers.dash = setInterval(refreshDash, 10000);
+  S.timers.display = setInterval(refreshDisplay, 500);
   S.timers.wifi = setInterval(refreshWifi, 8000);
   S.timers.power = setInterval(refreshPower, 30000);
   setInterval(tick, 500);

@@ -246,6 +246,121 @@ static bool get_query_int(httpd_req_t *req, const char *key, int *out)
     return true;
 }
 
+static const char *anim_to_string(wt_segd_anim_t anim)
+{
+    switch (anim)
+    {
+    case WT_SEGD_ANIM_PULSE:
+        return "pulse";
+    case WT_SEGD_ANIM_RAINBOW:
+        return "rainbow";
+    case WT_SEGD_ANIM_WAVE:
+        return "wave";
+    case WT_SEGD_ANIM_SOLID:
+    default:
+        return "solid";
+    }
+}
+
+static const char *mode_to_string(wt_segd_mode_t mode)
+{
+    switch (mode)
+    {
+    case WT_SEGD_MODE_TIME:
+        return "time";
+    case WT_SEGD_MODE_TEXT:
+        return "text";
+    case WT_SEGD_MODE_RAW:
+        return "raw";
+    case WT_SEGD_MODE_NUMBER:
+    default:
+        return "number";
+    }
+}
+
+static cJSON *color_to_json(wt_segd_color_t color)
+{
+    cJSON *arr = cJSON_CreateArray();
+    cJSON_AddItemToArray(arr, cJSON_CreateNumber(color.red));
+    cJSON_AddItemToArray(arr, cJSON_CreateNumber(color.green));
+    cJSON_AddItemToArray(arr, cJSON_CreateNumber(color.blue));
+    return arr;
+}
+
+static void sanitize_display_text(const char *src, char *dst, size_t dst_len)
+{
+    if (!dst || dst_len == 0)
+    {
+        return;
+    }
+
+    size_t out = 0;
+    while (src && *src && out < (dst_len - 1))
+    {
+        char ch = *src++;
+        if ((ch >= 'a') && (ch <= 'z'))
+        {
+            ch = (char)(ch - ('a' - 'A'));
+        }
+        if (((ch >= 'A') && (ch <= 'Z')) ||
+            ((ch >= '0') && (ch <= '9')) ||
+            (ch == ' ') || (ch == '_') || (ch == '-'))
+        {
+            dst[out++] = ch;
+        }
+    }
+    dst[out] = '\0';
+}
+
+static wt_segd_anim_t resolve_runtime_anim(const wt_settings_t *s)
+{
+    if (strcmp(s->reaction_effect, "rainbow") == 0)
+    {
+        return WT_SEGD_ANIM_RAINBOW;
+    }
+    if (s->anim_pulse)
+    {
+        return WT_SEGD_ANIM_PULSE;
+    }
+    return WT_SEGD_ANIM_SOLID;
+}
+
+static void apply_display_settings_now(const wt_settings_t *s)
+{
+    if (!s || !wt_segd_queue)
+    {
+        return;
+    }
+
+    wt_segd_request_t req = {
+        .mode = WT_SEGD_MODE_TIME,
+        .value = s->display_value,
+        .time_format = s->time_format,
+        .colon = true,
+        .colon_blink = s->colon_blink,
+        .anim = resolve_runtime_anim(s),
+        .color_on = s->color_on,
+        .color_off = s->color_off,
+        .intensity = s->intensity,
+    };
+
+    if (strcmp(s->display_mode, "number") == 0)
+    {
+        req.mode = WT_SEGD_MODE_NUMBER;
+        req.colon = false;
+        req.colon_blink = false;
+    }
+    else if (strcmp(s->display_mode, "text") == 0)
+    {
+        req.mode = WT_SEGD_MODE_TEXT;
+        req.colon = false;
+        req.colon_blink = false;
+        strlcpy(req.text, s->display_text, sizeof(req.text));
+    }
+
+    xQueueOverwrite(wt_segd_queue, &req);
+}
+
 /* ------------------------------------------------------------------ */
 /*  SPIFFS                                                               */
 /* ------------------------------------------------------------------ */
@@ -482,6 +597,58 @@ static esp_err_t handler_logs(httpd_req_t *req)
 }
 
 /* ------------------------------------------------------------------ */
+/*  GET /api/display                                                   */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_display(httpd_req_t *req)
+{
+    wt_segd_snapshot_t snapshot;
+    if (!wt_segd_snapshot_get(&snapshot))
+    {
+        RESP_JSON(req, "{\"available\":false}");
+        return ESP_OK;
+    }
+
+    int brightness = (snapshot.request.intensity * 100) / 255;
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "available", true);
+    cJSON_AddStringToObject(root, "mode", mode_to_string(snapshot.request.mode));
+    cJSON_AddStringToObject(root, "anim", anim_to_string(snapshot.request.anim));
+    cJSON_AddNumberToObject(root, "brightness", brightness);
+    cJSON_AddBoolToObject(root, "colon", snapshot.colon_on);
+    cJSON_AddBoolToObject(root, "colon_blink", snapshot.request.colon_blink);
+    cJSON_AddNumberToObject(root, "time_format", snapshot.request.time_format);
+
+    cJSON *digits = cJSON_AddArrayToObject(root, "digits");
+    for (int i = 0; i < WT_SEGD_NUM_DIGITS; ++i)
+    {
+        cJSON_AddItemToArray(digits, cJSON_CreateNumber(snapshot.frame.digit[i]));
+    }
+
+    cJSON_AddItemToObject(root, "color_on", color_to_json(snapshot.request.color_on));
+    cJSON_AddItemToObject(root, "color_off", color_to_json(snapshot.request.color_off));
+    cJSON_AddItemToObject(root, "colon_color", color_to_json(snapshot.colon_color));
+
+    cJSON *digit_colors = cJSON_AddArrayToObject(root, "digit_colors");
+    for (int digit = 0; digit < WT_SEGD_NUM_DIGITS; ++digit)
+    {
+        cJSON *seg_colors = cJSON_CreateArray();
+        for (int seg = 0; seg < WT_SEGD_SEGS_PER_DIGIT; ++seg)
+        {
+            cJSON_AddItemToArray(seg_colors, color_to_json(snapshot.digit_color[digit][seg]));
+        }
+        cJSON_AddItemToArray(digit_colors, seg_colors);
+    }
+
+    char *json = cJSON_PrintUnformatted(root);
+    RESP_JSON(req, json);
+    free(json);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
 /*  GET /api/wifi                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -644,7 +811,7 @@ static esp_err_t handler_settings_get(httpd_req_t *req)
     /* brightness mapped 0-100 from intensity 0-255 */
     int brt = (int)((s.intensity * 100) / 255);
 
-    char buf[1024];
+    char buf[1280];
     snprintf(buf, sizeof(buf),
              "{"
              "\"color\":\"%s\","
@@ -654,6 +821,9 @@ static esp_err_t handler_settings_get(httpd_req_t *req)
              "\"anim_pulse\":%s,"
              "\"anim_transition\":%s,"
              "\"reaction_effect\":\"%s\","
+             "\"display_mode\":\"%s\","
+             "\"display_value\":%d,"
+             "\"display_text\":\"%s\","
              "\"time_format\":%d,"
              "\"timezone\":\"%s\","
              "\"ntp_server\":\"%s\","
@@ -676,6 +846,9 @@ static esp_err_t handler_settings_get(httpd_req_t *req)
              s.anim_pulse ? "true" : "false",
              s.anim_transition ? "true" : "false",
              s.reaction_effect,
+             s.display_mode,
+             s.display_value,
+             s.display_text,
              s.time_format,
              s.timezone,
              s.ntp_server,
@@ -745,6 +918,15 @@ static esp_err_t handler_settings_set(httpd_req_t *req)
     cJSON *reff = cJSON_GetObjectItem(j, "reaction_effect");
     if (reff && cJSON_IsString(reff))
         strlcpy(s.reaction_effect, cJSON_GetStringValue(reff), sizeof(s.reaction_effect));
+    cJSON *dmode = cJSON_GetObjectItem(j, "display_mode");
+    if (dmode && cJSON_IsString(dmode))
+        strlcpy(s.display_mode, cJSON_GetStringValue(dmode), sizeof(s.display_mode));
+    cJSON *dvalue = cJSON_GetObjectItem(j, "display_value");
+    if (dvalue)
+        s.display_value = (int16_t)cJSON_GetNumberValue(dvalue);
+    cJSON *dtext = cJSON_GetObjectItem(j, "display_text");
+    if (dtext && cJSON_IsString(dtext))
+        sanitize_display_text(cJSON_GetStringValue(dtext), s.display_text, sizeof(s.display_text));
 
     /* ── Clock fields ── */
     cJSON *tf = cJSON_GetObjectItem(j, "time_format");
@@ -795,6 +977,11 @@ static esp_err_t handler_settings_set(httpd_req_t *req)
     cJSON_Delete(j);
 
     bool ok = wt_settings_set(&s);
+    if (ok)
+    {
+        wt_settings_t applied = wt_settings_get();
+        apply_display_settings_now(&applied);
+    }
     RESP_JSON(req, ok ? "{\"status\":\"ok\"}" : "{\"status\":\"err\",\"error\":\"nvs write failed\"}");
     return ESP_OK;
 }
@@ -1069,6 +1256,7 @@ static void start_server(void)
     REG(HTTP_GET, "/app.js", handler_app_js);
     REG(HTTP_GET, "/api/system", handler_system);
     REG(HTTP_GET, "/api/status", handler_system);
+    REG(HTTP_GET, "/api/display", handler_display);
     REG(HTTP_GET, "/api/logs", handler_logs);
     REG(HTTP_GET, "/api/wifi", handler_wifi_get);
     REG(HTTP_GET, "/api/wifi/status", handler_wifi_get);

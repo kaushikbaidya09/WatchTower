@@ -31,9 +31,23 @@
 /*  Main display task                                                    */
 /* ------------------------------------------------------------------ */
 
+static wt_segd_anim_t resolve_anim(const wt_settings_t *cfg)
+{
+    if (strcmp(cfg->reaction_effect, "rainbow") == 0)
+    {
+        return WT_SEGD_ANIM_RAINBOW;
+    }
+    if (cfg->anim_pulse)
+    {
+        return WT_SEGD_ANIM_PULSE;
+    }
+    return WT_SEGD_ANIM_SOLID;
+}
+
 void wt_task_main(void *pvParameters)
 {
-    // APPLOG_I("---------- APP MAIN TASK STARTED ----------");
+    wt_segd_request_t last_req = {0};
+    bool has_last_req = false;
 
     while (1)
     {
@@ -41,21 +55,43 @@ void wt_task_main(void *pvParameters)
 
         wt_segd_request_t req = {
             .mode = WT_SEGD_MODE_TIME,
-            .value = 0,
+            .value = cfg.display_value,
+            .time_format = cfg.time_format,
             .colon = true,
             .colon_blink = cfg.colon_blink,
-            .anim = cfg.anim,
+            .anim = resolve_anim(&cfg),
             .color_on = cfg.color_on,
             .color_off = cfg.color_off,
             .intensity = cfg.intensity,
         };
 
-        if (wt_segd_queue)
+        if (strcmp(cfg.display_mode, "number") == 0)
         {
-            xQueueOverwrite(wt_segd_queue, &req);
+            req.mode = WT_SEGD_MODE_NUMBER;
+            req.colon = false;
+            req.colon_blink = false;
+        }
+        else if (strcmp(cfg.display_mode, "text") == 0)
+        {
+            req.mode = WT_SEGD_MODE_TEXT;
+            req.colon = false;
+            req.colon_blink = false;
+            strlcpy(req.text, cfg.display_text, sizeof(req.text));
+        }
+        else
+        {
+            req.mode = WT_SEGD_MODE_TIME;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        bool changed = !has_last_req || memcmp(&last_req, &req, sizeof(req)) != 0;
+        if (wt_segd_queue && (changed || req.mode == WT_SEGD_MODE_TIME))
+        {
+            xQueueOverwrite(wt_segd_queue, &req);
+            last_req = req;
+            has_last_req = true;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
 

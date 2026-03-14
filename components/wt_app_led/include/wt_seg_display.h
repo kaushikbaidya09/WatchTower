@@ -64,6 +64,7 @@ typedef struct
     int value;                 ///< valid for WT_SEGD_MODE_NUMBER integer 0-9999
     char text[5];              ///< valid for WT_SEGD_MODE_TEXT 4 chars + '\0'
     uint8_t raw[4];            ///< valid for WT_SEGD_MODE_RAW segment bitmasks
+    uint8_t time_format;       ///< valid for WT_SEGD_MODE_TIME, 12 or 24
     bool colon;                ///< Steady colon on/off
     bool colon_blink;          ///< Blink colon at ~1 Hz (overrides colon when true)
     wt_segd_anim_t anim;       ///< Animation mode applied to ON segments
@@ -78,10 +79,22 @@ typedef struct
     bool colon;
 } wt_segd_frame_t;
 
+typedef struct
+{
+    wt_segd_request_t request;
+    wt_segd_frame_t frame;
+    wt_segd_color_t digit_color[WT_SEGD_NUM_DIGITS][WT_SEGD_SEGS_PER_DIGIT];
+    wt_segd_color_t colon_color;
+    bool colon_on;
+} wt_segd_snapshot_t;
+
 /*!
     \brief  Convert a wt_segd_request_t into a wt_segd_frame_t.
  */
 void wt_segd_prepare_frame(const wt_segd_request_t *req, wt_segd_frame_t *frame);
+
+void wt_segd_snapshot_set(const wt_segd_snapshot_t *snapshot);
+bool wt_segd_snapshot_get(wt_segd_snapshot_t *snapshot);
 
 
 extern QueueHandle_t wt_segd_queue;

@@ -1,6 +1,7 @@
 #include "wt_seg_display.h"
 #include <string.h>
 #include <time.h>
+#include "freertos/FreeRTOS.h"
 
 typedef enum
 {
@@ -161,6 +162,10 @@ static const uint8_t wt_segd_symbol[SEGD_SYM_MAX] = {
     [SEGD_SYM_LOWER_Z] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_D | WT_SEGD_E | WT_SEGD_G,
 };
 
+static portMUX_TYPE s_snapshot_lock = portMUX_INITIALIZER_UNLOCKED;
+static wt_segd_snapshot_t s_snapshot = {0};
+static bool s_snapshot_valid = false;
+
 /*!
     \brief  Return the segment bitmask for a single ASCII character.
  */
@@ -221,8 +226,17 @@ void wt_segd_prepare_frame(const wt_segd_request_t *req, wt_segd_frame_t *frame)
         time_t now = time(NULL);
         struct tm t;
         localtime_r(&now, &t);
-        frame->digit[0] = wt_segd_char('0' + (t.tm_hour / 10));
-        frame->digit[1] = wt_segd_char('0' + (t.tm_hour % 10));
+        int hour = t.tm_hour;
+        if (req->time_format == 12)
+        {
+            hour = hour % 12;
+            if (hour == 0)
+            {
+                hour = 12;
+            }
+        }
+        frame->digit[0] = wt_segd_char('0' + (hour / 10));
+        frame->digit[1] = wt_segd_char('0' + (hour % 10));
         frame->digit[2] = wt_segd_char('0' + (t.tm_min / 10));
         frame->digit[3] = wt_segd_char('0' + (t.tm_min % 10));
         break;
@@ -252,4 +266,35 @@ void wt_segd_prepare_frame(const wt_segd_request_t *req, wt_segd_frame_t *frame)
     }
 
     frame->colon = req->colon;
+}
+
+void wt_segd_snapshot_set(const wt_segd_snapshot_t *snapshot)
+{
+    if (!snapshot)
+    {
+        return;
+    }
+
+    taskENTER_CRITICAL(&s_snapshot_lock);
+    s_snapshot = *snapshot;
+    s_snapshot_valid = true;
+    taskEXIT_CRITICAL(&s_snapshot_lock);
+}
+
+bool wt_segd_snapshot_get(wt_segd_snapshot_t *snapshot)
+{
+    if (!snapshot)
+    {
+        return false;
+    }
+
+    taskENTER_CRITICAL(&s_snapshot_lock);
+    bool valid = s_snapshot_valid;
+    if (valid)
+    {
+        *snapshot = s_snapshot;
+    }
+    taskEXIT_CRITICAL(&s_snapshot_lock);
+
+    return valid;
 }

@@ -23,6 +23,9 @@ typedef struct
     bool anim_transition;
     char reaction_effect[16];
     char color_hex[8]; ///< "#rrggbb"
+    char display_mode[8];
+    int16_t display_value;
+    char display_text[5];
 
     /* Time / Clock */
     char timezone[48];

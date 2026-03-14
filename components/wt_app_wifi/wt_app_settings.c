@@ -28,6 +28,9 @@
 #define WT_NVSK_ANIM_PULSE "anim_pulse"
 #define WT_NVSK_ANIM_TRANS "anim_trans"
 #define WT_NVSK_REACT_EFF "react_eff"
+#define WT_NVSK_DISP_MODE "disp_mode"
+#define WT_NVSK_DISP_VALUE "disp_value"
+#define WT_NVSK_DISP_TEXT "disp_text"
 /* clock */
 #define WT_NVSK_TIMEZONE "timezone"
 #define WT_NVSK_NTP_SRV "ntp_srv"
@@ -73,6 +76,9 @@ static const wt_settings_t wt_app_default_setting = {
     .anim_transition = true,
     .reaction_effect = "none",
     .color_hex = "#00c8ff",
+    .display_mode = "time",
+    .display_value = 1234,
+    .display_text = "HELO",
     .timezone = "IST-5:30",
     .ntp_server = "pool.ntp.org",
     .time_format = 24,
@@ -136,6 +142,9 @@ static void load_from_nvs(void)
     wt_app_setting.anim_transition = (bool)u8;
     WT_NVS_GET_STR(WT_NVSK_REACT_EFF, wt_app_setting.reaction_effect)
     WT_NVS_GET_STR(WT_NVSK_COLOR_HEX, wt_app_setting.color_hex)
+    WT_NVS_GET_STR(WT_NVSK_DISP_MODE, wt_app_setting.display_mode)
+    nvs_get_i16(wt_nvs_h, WT_NVSK_DISP_VALUE, &wt_app_setting.display_value);
+    WT_NVS_GET_STR(WT_NVSK_DISP_TEXT, wt_app_setting.display_text)
     WT_NVS_GET_STR(WT_NVSK_TIMEZONE, wt_app_setting.timezone)
     WT_NVS_GET_STR(WT_NVSK_NTP_SRV, wt_app_setting.ntp_server)
     WT_NVS_GET_UINT8(WT_NVSK_TIME_FMT, wt_app_setting.time_format)
@@ -178,6 +187,9 @@ static bool save_to_nvs(const wt_settings_t *s)
     nvs_set_u8(wt_nvs_h, WT_NVSK_ANIM_TRANS, (uint8_t)s->anim_transition);
     nvs_set_str(wt_nvs_h, WT_NVSK_REACT_EFF, s->reaction_effect);
     nvs_set_str(wt_nvs_h, WT_NVSK_COLOR_HEX, s->color_hex);
+    nvs_set_str(wt_nvs_h, WT_NVSK_DISP_MODE, s->display_mode);
+    nvs_set_i16(wt_nvs_h, WT_NVSK_DISP_VALUE, s->display_value);
+    nvs_set_str(wt_nvs_h, WT_NVSK_DISP_TEXT, s->display_text);
     nvs_set_str(wt_nvs_h, WT_NVSK_TIMEZONE, s->timezone);
     nvs_set_str(wt_nvs_h, WT_NVSK_NTP_SRV, s->ntp_server);
     nvs_set_u8(wt_nvs_h, WT_NVSK_TIME_FMT, s->time_format);
@@ -202,11 +214,53 @@ static bool save_to_nvs(const wt_settings_t *s)
     return (err == ESP_OK);
 }
 
+static void normalize_settings(wt_settings_t *s)
+{
+    if (!s)
+    {
+        return;
+    }
+
+    if (strcmp(s->reaction_effect, "rainbow") == 0)
+    {
+        s->anim = WT_SEGD_ANIM_RAINBOW;
+    }
+    else if (s->anim_pulse)
+    {
+        s->anim = WT_SEGD_ANIM_PULSE;
+    }
+    else
+    {
+        s->anim = WT_SEGD_ANIM_SOLID;
+    }
+
+    if ((strcmp(s->display_mode, "time") != 0) &&
+        (strcmp(s->display_mode, "number") != 0) &&
+        (strcmp(s->display_mode, "text") != 0))
+    {
+        strlcpy(s->display_mode, "time", sizeof(s->display_mode));
+    }
+
+    if (s->display_value < 0)
+    {
+        s->display_value = 0;
+    }
+    if (s->display_value > 9999)
+    {
+        s->display_value = 9999;
+    }
+}
+
 void wt_settings_init(void)
 {
     wt_app_setting_mutex = xSemaphoreCreateMutex();
     wt_app_setting = wt_app_default_setting;
     load_from_nvs();
+    wt_settings_parse_hex_color(wt_app_setting.color_hex,
+                                &wt_app_setting.color_on.red,
+                                &wt_app_setting.color_on.green,
+                                &wt_app_setting.color_on.blue);
+    normalize_settings(&wt_app_setting);
     setenv("TZ", wt_app_setting.timezone, 1);
     tzset();
     APPLOG_I("Settings loaded (tz=%s fmt=%dh color=%s)",
@@ -231,14 +285,17 @@ bool wt_settings_set(const wt_settings_t *wt_settings)
         return false;
     }
 
+    wt_settings_t normalized = *wt_settings;
+    normalize_settings(&normalized);
+
     xSemaphoreTake(wt_app_setting_mutex, portMAX_DELAY);
-    wt_app_setting = *wt_settings;
+    wt_app_setting = normalized;
     xSemaphoreGive(wt_app_setting_mutex);
 
-    setenv("TZ", wt_settings->timezone, 1);
+    setenv("TZ", normalized.timezone, 1);
     tzset();
 
-    bool status = save_to_nvs(wt_settings);
+    bool status = save_to_nvs(&normalized);
     if (status != true)
     {
         APPLOG_E("Failed to save settings!");

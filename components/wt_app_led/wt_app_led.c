@@ -17,6 +17,7 @@
 #define RAINBOW_SPEED 0.04f        ///< Phase increment/frame, RAINBOW (~3.1 s/cycle)
 #define WAVE_HUE_STEP 20           ///< Hue degrees between adjacent segments in WAVE
 #define COLON_BLINK_FRAMES 25      ///< Half-period in frames for colon blink (500 ms)
+#define INTENSITY_SLEW_STEP 4      ///< Max brightness delta applied per frame
 
 QueueHandle_t wt_segd_queue = NULL;                                                      ///< Shared queue
 static uint8_t s_pixels[WT_SEGD_TOTAL_LEDS * 3];                                         ///< Raw GRB byte buffer for all 58 WS2812 LEDs.
@@ -152,47 +153,66 @@ static void wt_set_led_buf(int index, wt_segd_color_t color)
     s_pixels[index * 3 + 2] = color.blue;
 }
 
+static wt_segd_color_t wt_segment_color_for(int visual_index, int segment_index, bool on,
+                                            const wt_segd_request_t *req, float phase)
+{
+    wt_segd_color_t color;
+
+    if (!on)
+    {
+        return req->color_off;
+    }
+
+    switch (req->anim)
+    {
+    case WT_SEGD_ANIM_PULSE:
+    {
+        float b = sinf(phase) * 0.5f + 0.5f;
+        color = wt_scale_color_intensity(req->color_on, (uint8_t)(b * req->intensity));
+        break;
+    }
+    case WT_SEGD_ANIM_RAINBOW:
+    {
+        int hue = (int)(phase * (360.0f / (2.0f * (float)M_PI))) % 360;
+        color = wt_hsv_to_rgb(hue, 255, req->intensity);
+        break;
+    }
+    case WT_SEGD_ANIM_WAVE:
+    {
+        int global_seg = visual_index * WT_SEGD_SEGS_PER_DIGIT + segment_index;
+        int hue = ((int)(phase * (360.0f / (2.0f * (float)M_PI))) + global_seg * WAVE_HUE_STEP) % 360;
+        color = wt_hsv_to_rgb(hue, 255, req->intensity);
+        break;
+    }
+    case WT_SEGD_ANIM_SOLID:
+    default:
+        color = wt_scale_color_intensity(req->color_on, req->intensity);
+        break;
+    }
+
+    return color;
+}
+
+static wt_segd_color_t wt_colon_color_for(bool on, const wt_segd_request_t *req, float phase)
+{
+    return wt_segment_color_for(0, 0, on, req, phase);
+}
+
 /*!
     \brief  Render one digit into the pixel buffer.
  */
-static void render_digit(int visual_index, uint8_t seg_mask, const wt_segd_request_t *req, float phase)
+static void render_digit(int visual_index, uint8_t seg_mask, const wt_segd_request_t *req,
+                         float phase, wt_segd_snapshot_t *snapshot)
 {
     int led_offset = s_digit_led_start[visual_index];
 
     for (int i = 0; i < WT_SEGD_SEGS_PER_DIGIT; i++)
     {
         bool on = (seg_mask >> s_strip_pos_to_bit[i]) & 0x01;
-        wt_segd_color_t color;
-
-        if (on)
+        wt_segd_color_t color = wt_segment_color_for(visual_index, i, on, req, phase);
+        if (snapshot)
         {
-            int hue = 0;
-            switch (req->anim)
-            {
-            case WT_SEGD_ANIM_SOLID:
-                color = wt_scale_color_intensity(req->color_on, req->intensity);
-                break;
-            case WT_SEGD_ANIM_PULSE:
-                float b = sinf(phase) * 0.5f + 0.5f;
-                color = wt_scale_color_intensity(req->color_on, (uint8_t)(b * req->intensity));
-                break;
-            case WT_SEGD_ANIM_RAINBOW:
-                hue = (int)(phase * (360.0f / (2.0f * (float)M_PI))) % 360;
-                color = wt_hsv_to_rgb(hue, 255, req->intensity);
-                break;
-            case WT_SEGD_ANIM_WAVE:
-                int global_seg = visual_index * WT_SEGD_SEGS_PER_DIGIT + i;
-                hue = ((int)(phase * (360.0f / (2.0f * (float)M_PI))) + global_seg * WAVE_HUE_STEP) % 360;
-                color = wt_hsv_to_rgb(hue, 255, req->intensity);
-                break;
-            default:
-                color = wt_scale_color_intensity(req->color_on, req->intensity);
-                break;
-            }
-        }
-        else
-        {
-            color = req->color_off;
+            snapshot->digit_color[visual_index][s_strip_pos_to_bit[i]] = color;
         }
 
         int base = led_offset + i * WT_SEGD_LEDS_PER_SEG;
@@ -208,35 +228,12 @@ static void render_digit(int visual_index, uint8_t seg_mask, const wt_segd_reque
     \param[in]  req    Current display request (color / animation).
     \param[in]  phase  Current animation phase in radians.
  */
-static void render_colon(bool on, const wt_segd_request_t *req, float phase)
+static void render_colon(bool on, const wt_segd_request_t *req, float phase, wt_segd_snapshot_t *snapshot)
 {
-    wt_segd_color_t color;
-
-    if (on)
+    wt_segd_color_t color = wt_colon_color_for(on, req, phase);
+    if (snapshot)
     {
-        switch (req->anim)
-        {
-        case WT_SEGD_ANIM_PULSE:
-        {
-            float b = sinf(phase) * 0.5f + 0.5f;
-            color = wt_scale_color_intensity(req->color_on, (uint8_t)(b * req->intensity));
-            break;
-        }
-        case WT_SEGD_ANIM_RAINBOW:
-        case WT_SEGD_ANIM_WAVE:
-        {
-            int hue = (int)(phase * (360.0f / (2.0f * (float)M_PI))) % 360;
-            color = wt_hsv_to_rgb(hue, 255, req->intensity);
-            break;
-        }
-        default:
-            color = wt_scale_color_intensity(req->color_on, req->intensity);
-            break;
-        }
-    }
-    else
-    {
-        color = req->color_off;
+        snapshot->colon_color = color;
     }
 
     wt_set_led_buf(WT_SEGD_COLON_LED_OFFSET, color);
@@ -290,6 +287,7 @@ void wt_task_led(void *pvParameter)
         .color_off = WT_SEGD_DIM,
         .intensity = 200,
     };
+    wt_segd_request_t target = current;
 
     wt_segd_frame_t frame = {0};
     wt_segd_prepare_frame(&current, &frame);
@@ -302,15 +300,28 @@ void wt_task_led(void *pvParameter)
 
     while (1)
     {
-
-        /* Dequeue latest request (non-blocking) */
         wt_segd_request_t new_req;
         if (xQueueReceive(wt_segd_queue, &new_req, 0) == pdTRUE)
         {
+            target = new_req;
+            uint8_t keep_intensity = current.intensity;
             current = new_req;
-            wt_segd_prepare_frame(&current, &frame);
+            current.intensity = keep_intensity;
             // APPLOG_I("Request: mode=%d value=%d", current.mode, current.value);
         }
+
+        if (current.intensity < target.intensity)
+        {
+            int next = current.intensity + INTENSITY_SLEW_STEP;
+            current.intensity = (next > target.intensity) ? target.intensity : (uint8_t)next;
+        }
+        else if (current.intensity > target.intensity)
+        {
+            int next = current.intensity - INTENSITY_SLEW_STEP;
+            current.intensity = (next < target.intensity) ? target.intensity : (uint8_t)next;
+        }
+
+        wt_segd_prepare_frame(&current, &frame);
 
         /* Resolve colon state for this frame */
         bool colon_on = current.colon_blink
@@ -322,12 +333,19 @@ void wt_task_led(void *pvParameter)
                           ? pulse_phase
                           : rainbow_phase;
 
+        wt_segd_snapshot_t snapshot = {
+            .request = current,
+            .frame = frame,
+            .colon_on = colon_on,
+        };
+
         /* Render all 4 digits and the colon */
         for (int v = 0; v < WT_SEGD_NUM_DIGITS; v++)
         {
-            render_digit(v, frame.digit[v], &current, phase);
+            render_digit(v, frame.digit[v], &current, phase, &snapshot);
         }
-        render_colon(colon_on, &current, phase);
+        render_colon(colon_on, &current, phase, &snapshot);
+        wt_segd_snapshot_set(&snapshot);
 
         /* Transmit pixel buffer over RMT */
         ESP_ERROR_CHECK(rmt_transmit(led_chan, rtm_encoder_h,

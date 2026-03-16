@@ -20,53 +20,26 @@ const S = {
   displayMode: "time",
   displayValue: 1234,
   displayText: "HELO",
-  liveBusy: false,
-  liveTickMs: 500,
-  lastSettingsSync: 0,
   conn: {
     state: "pend",
     lastSeen: 0,
     lastTry: 0,
   },
   timers: {},
+  /* WebSocket */
+  ws: null,
+  wsConnected: false,
+  wsRetryMs: 3000,
 };
 const _db = {};
 function debounce(key, fn, ms) {
   clearTimeout(_db[key]);
   _db[key] = setTimeout(fn, ms || 500);
 }
-async function apiGet(path) {
-  S.conn.lastTry = Date.now();
-  try {
-    const r = await fetch(path);
-    if (!r.ok) throw new Error(r.status);
-    const data = await r.json();
-    markConnectionSeen();
-    return data;
-  } catch (e) {
-    markConnectionLost();
-    console.warn("GET", path, e.message);
-    return null;
-  }
-}
-async function apiPost(path, data) {
-  S.conn.lastTry = Date.now();
-  try {
-    const r = await fetch(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    });
-    if (!r.ok) throw new Error(r.status);
-    const body = await r.json();
-    markConnectionSeen();
-    return body;
-  } catch (e) {
-    markConnectionLost();
-    console.warn("POST", path, e.message);
-    return null;
-  }
-}
+/* All data I/O goes through the WebSocket (wsSend / handleWsMessage).
+   apiGet / apiPost have been removed — the only HTTP requests left are
+   the two OTA binary uploads which use XHR directly in doUpload(). */
+
 function el(id) {
   return document.getElementById(id);
 }
@@ -320,10 +293,17 @@ function resizeAll() {
   resizeCanvas("vd-canvas");
   resizeCanvas("prev-canvas");
 }
-function tick() {
-  resizeAll();
-  renderDisplay("vd-canvas");
-  renderDisplay("prev-canvas");
+
+/* Canvas is redrawn every animation frame (~60 fps) — decoupled from
+   WS data arrival. Data ticks at 20 fps (display) / 1 fps (full state);
+   the rAF loop just paints whatever is currently in S.display. */
+function startRenderLoop() {
+  function frame() {
+    renderDisplay("vd-canvas");
+    renderDisplay("prev-canvas");
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
 }
 
 /* ═════ PAGE / SECTION NAV ════════════════ */
@@ -338,13 +318,6 @@ function showPage(id) {
   if (pg) pg.classList.add("active");
   const nb = document.querySelector('.nb[data-page="' + id + '"]');
   if (nb) nb.classList.add("active");
-  if (id === "settings") {
-    refreshSys();
-    refreshFW();
-  }
-  if (id === "dashboard") {
-    refreshDash();
-  }
   try {
     localStorage.setItem("wt-page", id);
   } catch (e) {}
@@ -360,14 +333,8 @@ function showSec(id) {
   if (pane) pane.classList.add("active");
   const nb = document.querySelector('.snb[data-s="' + id + '"]');
   if (nb) nb.classList.add("active");
-  if (id === "logs") startLogPoll();
-  if (id === "wifi") refreshWifi();
-  if (id === "sys") refreshSys();
-  if (id === "fw") refreshFW();
-  if (id === "power") refreshPower();
   if (id === "display") {
     resizeCanvas("prev-canvas");
-    renderDisplay("prev-canvas");
   }
   try {
     localStorage.setItem("wt-sec", id);
@@ -420,23 +387,7 @@ function applyFmtUi(n) {
   if (b12) b12.classList.toggle("active", n === 12);
 }
 
-/* ═════ DASHBOARD  /api/status ════════════ */
-async function refreshDash() {
-  const d = await apiGet("/api/status");
-  if (!d) return;
-  setText("d-uptime", fmtUptime(d.uptime_s));
-  setText("d-heap", fmtBytes(d.free_heap));
-  setText("d-rssi", d.rssi ? d.rssi + " dBm" : "—");
-  setText("d-ip", d.sta_ip || d.ap_ip || "—");
-  setText("d-temp", fmtTemperature(d.temperature));
-  setText("d-fw", d.app_version || "—");
-  const dot = el("wdot"),
-    lbl = el("wifi-label");
-  if (dot) dot.className = "wdot " + (d.sta_connected ? "up" : "down");
-  if (lbl)
-    lbl.textContent = d.sta_connected ? d.sta_ssid || "Connected" : "Offline";
-  updateDispInfo();
-}
+/* updateDispInfo / syncDisplayModeInputs — pure UI helpers, kept */
 function updateDispInfo() {
   const st = S.display;
   setText(
@@ -461,95 +412,22 @@ function syncDisplayModeInputs() {
   if (vw) vw.style.display = mode === "number" ? "" : "none";
   if (tw) tw.style.display = mode === "text" ? "" : "none";
 }
-
-async function refreshDisplay() {
-  const d = await apiGet("/api/display");
-  if (!d || d.available === false) return;
-  S.display = d;
-  if (d.mode) S.displayMode = d.mode;
-  if (d.brightness != null) S.brightness = d.brightness;
-  setText("live-time", displayText(d));
-  updateDispInfo();
-  resizeAll();
-  renderDisplay("vd-canvas");
-  renderDisplay("prev-canvas");
-}
-async function manualDisplayRefresh() {
-  await Promise.allSettled([loadSettings(), refreshDisplay()]);
-  toast("Display refreshed", "ok", 1200);
+/* manualDisplayRefresh — sends a ping; the next WS push (≤500 ms) carries fresh display state */
+function manualDisplayRefresh() {
+  wsSend("ping", {});
+  toast("Refreshing…", "info", 800);
 }
 
-/* ═════ SYSTEM ════════════════════════════ */
-async function refreshSys() {
-  const d = await apiGet("/api/status");
-  if (!d) return;
-  const ramPct =
-    d.total_heap && d.free_heap
-      ? Math.round((1 - d.free_heap / d.total_heap) * 100)
-      : 0;
-  setBar("ram", ramPct, "ram-pct");
-  setBar("cpu", d.cpu_usage || 0, "cpu-pct");
-  setBar("flash", d.flash_used_pct || 0, "flash-pct");
-  setBar("spiffs", d.spiffs_used_pct || 0, "spiffs-pct");
-  setText("i-chip", d.chip_model || "—");
-  setText("i-cores", d.cpu_cores || "—");
-  setText("i-freq", d.cpu_freq_mhz ? d.cpu_freq_mhz + " MHz" : "—");
-  setText("i-flash", fmtBytes(d.flash_size));
-  setText("i-heap", fmtBytes(d.free_heap));
-  setText("i-minheap", fmtBytes(d.min_free_heap));
-  setText("i-uptime", fmtUptime(d.uptime_s));
-  setText("i-temp", fmtTemperature(d.temperature));
-  setText("i-reset", d.reset_reason || "—");
-}
+
 function setBar(id, pct, labelId) {
   const f = el(id + "-bar");
   if (f) f.style.width = Math.min(100, Math.round(pct)) + "%";
   if (labelId) setText(labelId, Math.round(pct) + "%");
 }
-async function refreshFW() {
-  const d = await apiGet("/api/status");
-  if (!d) return;
-  setText("fw-ver", d.app_version || "—");
-  setText("fw-date", d.build_date || "—");
-  setText("fw-idf", d.idf_version || "—");
-  setText("fw-slot", d.ota_slot || "—");
-  setText("fw-app0", d.app0_state || "—");
-  setText("fw-app1", d.app1_state || "—");
-  setText(
-    "fw-spiffs",
-    d.spiffs_used_pct != null ? d.spiffs_used_pct + "%" : "—",
-  );
-}
 
-async function doRefresh(silent) {
-  await runLiveRefresh();
+function doRefresh(silent) {
+  wsSend("ping", {});
   if (!silent) toast("Data refreshed", "ok", 1200);
-}
-
-async function runLiveRefresh() {
-  if (S.liveBusy) return;
-  S.liveBusy = true;
-  try {
-    const now = Date.now();
-    const jobs = [
-      refreshDash(),
-      refreshDisplay(),
-      refreshSys(),
-      refreshFW(),
-      refreshWifi(),
-      refreshPower(),
-      pollLogs(),
-    ];
-    if (now - S.lastSettingsSync >= S.liveTickMs) {
-      jobs.push(loadSettings());
-      S.lastSettingsSync = now;
-    }
-    await Promise.allSettled(jobs);
-    tick();
-    updateConnectionBadge();
-  } finally {
-    S.liveBusy = false;
-  }
 }
 
 /* ═════ LOGS  /api/logs?seq=N ════════════ */
@@ -586,19 +464,6 @@ function addLogEntry(entry) {
   if (S.logs.length > 2000) S.logs.shift();
   renderLogLine(line, "log-viewer");
   renderLogLine(line, "dash-logs");
-}
-async function pollLogs() {
-  const d = await apiGet("/api/logs?seq=" + S.lastSeq);
-  if (!d) return;
-  const entries = d.logs || d.entries || [];
-  if (entries.length) {
-    entries.forEach(addLogEntry);
-    S.lastSeq = d.next_seq || S.lastSeq + entries.length;
-    setText("log-ts", "Updated " + new Date().toLocaleTimeString());
-  }
-}
-function startLogPoll() {
-  pollLogs();
 }
 function setLogFilter(lv) {
   S.logFilter = lv;
@@ -649,11 +514,11 @@ function onDispChange() {
   syncDisplayModeInputs();
   markActiveSwatch();
   updateDispInfo();
-  debounce("disp", sendDispSettings, 400);
+  debounce("disp", sendDispSettings, 600);
 }
 async function sendDispSettings() {
   const react = el("dp-react");
-  const r = await apiPost("/api/settings", {
+  const r = await apiCmd("settings", {
     color: S.color,
     brightness: S.brightness,
     anim_colon: S.blink,
@@ -665,10 +530,7 @@ async function sendDispSettings() {
     display_value: S.displayValue,
     display_text: S.displayText,
   });
-  if (r && r.status === "ok") {
-    await refreshDisplay();
-    toast("Display updated", "ok");
-  }
+  if (r && r.status === "ok") toast("Display updated", "ok");
 }
 async function forceSendDispSettings() {
   clearTimeout(_db.disp);
@@ -697,10 +559,10 @@ function setFmt(n) {
   onClockChange();
 }
 function onClockChange() {
-  debounce("clock", sendClockSettings, 500);
+  debounce("clock", sendClockSettings, 600);
 }
 async function sendClockSettings() {
-  const r = await apiPost("/api/settings", {
+  const r = await apiCmd("settings", {
     time_format: S.fmt,
     timezone: el("tz-sel") ? el("tz-sel").value : "UTC0",
     ntp_server: el("ntp-srv") ? el("ntp-srv").value : "pool.ntp.org",
@@ -715,7 +577,7 @@ async function sendClockSettings() {
 }
 async function syncNTP() {
   const srv = el("ntp-srv") ? el("ntp-srv").value : "pool.ntp.org";
-  const r = await apiPost("/api/ntp/sync", { server: srv });
+  const r = await apiCmd("ntp_sync", { server: srv });
   if (r) {
     toast("NTP sync triggered", "ok");
     setText("ntp-hint", "Last sync: " + new Date().toLocaleTimeString());
@@ -724,40 +586,16 @@ async function syncNTP() {
 async function rebootDevice() {
   const ok = window.confirm("Reboot the device now?");
   if (!ok) return;
-  const r = await apiPost("/api/reboot", {});
-  if (r && (r.ok || r.status === "ok")) {
-    toast("Rebooting device…", "ok", 2200);
-  } else {
-    toast("Reboot failed", "err");
-  }
+  const r = await apiCmd("reboot", {});
+  if (r && r.status === "ok") toast("Rebooting device…", "ok", 2200);
+  else toast("Reboot failed", "err");
 }
 
-/* ═════ POWER ════════════════════════════ */
-async function refreshPower() {
-  const d = await apiGet("/api/power");
-  if (!d) return;
-  const pct = d.battery_pct || 0;
-  const bar = el("batt-fill");
-  if (bar) {
-    bar.style.width = Math.min(100, pct) + "%";
-    bar.className = "batt-fill" + (pct < 20 ? " low" : pct < 50 ? " mid" : "");
-  }
-  setText("batt-txt", pct + "%");
-  setText("batt-v", d.voltage ? d.voltage.toFixed(2) + "V" : "—V");
-  setText("batt-ma", d.current ? d.current + "mA" : "—mA");
-  setText("pwr-src", d.source || "—");
-  setText("batt-eta", d.eta_hours ? d.eta_hours.toFixed(1) + "h" : "—h");
-  if (d.sleep_mode) setValueIfIdle("sl-mode", d.sleep_mode);
-  if (d.sleep_timeout != null) setValueIfIdle("sl-timeout", String(d.sleep_timeout));
-  if (d.batt_alert_pct != null) setValueIfIdle("batt-alert", String(d.batt_alert_pct));
-  if (d.ps_dim != null) setCheckedIfIdle("ps-dim", d.ps_dim);
-  if (d.ps_wifi != null) setCheckedIfIdle("ps-wifi", d.ps_wifi);
-}
 function onPowerChange() {
-  debounce("power", sendPowerSettings, 500);
+  debounce("power", sendPowerSettings, 600);
 }
 async function sendPowerSettings() {
-  const r = await apiPost("/api/settings", {
+  const r = await apiCmd("settings", {
     sleep_mode: el("sl-mode") ? el("sl-mode").value : "none",
     sleep_timeout: el("sl-timeout") ? parseInt(el("sl-timeout").value) : 30,
     batt_alert_pct: el("batt-alert") ? parseInt(el("batt-alert").value) : 20,
@@ -767,41 +605,6 @@ async function sendPowerSettings() {
   if (r && r.status === "ok") toast("Power settings saved", "ok");
 }
 
-/* ═════ WIFI  /api/wifi/status ══════════ */
-async function refreshWifi() {
-  const d = await apiGet("/api/wifi/status");
-  if (!d) return;
-  S.wifi = d;
-  const dot = el("wsc-dot");
-  if (dot) dot.className = "wsc-dot " + (d.connected ? "on" : "off");
-  setText("wsc-ssid", d.connected ? d.ssid || "—" : "Not connected");
-  setText(
-    "wsc-detail",
-    d.connected
-      ? (d.ip || "—") +
-          " · " +
-          (d.rssi || "—") +
-          " dBm" +
-          (d.channel ? " · Ch" + d.channel : "")
-      : "Searching…",
-  );
-  const ic = el("rssi-ic"),
-    rv = el("rssi-v");
-  if (rv) rv.textContent = d.rssi ? d.rssi + " dBm" : "— dBm";
-  if (ic) {
-    let s = 0;
-    if (d.rssi >= -55) s = 4;
-    else if (d.rssi >= -65) s = 3;
-    else if (d.rssi >= -75) s = 2;
-    else if (d.rssi) s = 1;
-    ic.className = "rssi-ic" + (s ? " s" + s : "");
-  }
-  const hdot = el("wdot"),
-    hlbl = el("wifi-label");
-  if (hdot) hdot.className = "wdot " + (d.connected ? "up" : "down");
-  if (hlbl) hlbl.textContent = d.connected ? d.ssid || "Connected" : "Offline";
-  renderProfiles(d.profiles || []);
-}
 function renderProfiles(profiles) {
   const c = el("profiles-list");
   if (!c) return;
@@ -843,30 +646,21 @@ function hideAddWifi() {
 async function addProfile() {
   const ssid = (el("new-ssid") && el("new-ssid").value.trim()) || "";
   const pass = (el("new-pass") && el("new-pass").value) || "";
-  if (!ssid) {
-    toast("SSID required", "warn");
-    return;
-  }
-  const r = await apiPost("/api/wifi/profiles", { ssid: ssid, password: pass });
-  if (r && r.status === "ok") {
+  if (!ssid) { toast("SSID required", "warn"); return; }
+  if (wsSend("wifi_add", { ssid: ssid, password: pass })) {
     toast('"' + ssid + '" added', "ok");
     hideAddWifi();
-    await refreshWifi();
-  } else toast("Failed to add profile", "err");
+  } else {
+    toast("Failed — not connected", "err");
+  }
 }
 async function delProfile(idx) {
-  const r = await apiPost("/api/wifi/profile/delete", { index: idx });
-  if (r && r.status === "ok") {
-    toast("Profile removed", "ok");
-    await refreshWifi();
-  } else toast("Failed", "err");
+  if (wsSend("wifi_del", { index: idx })) toast("Profile removed", "ok");
+  else toast("Failed — not connected", "err");
 }
 async function connectProfile(idx) {
-  const r = await apiPost("/api/wifi/connect", { index: idx });
-  if (r && r.status === "ok") {
-    toast("Connecting…", "ok");
-    await refreshWifi();
-  } else toast("Connect failed", "err");
+  if (wsSend("wifi_connect", { index: idx })) toast("Connecting…", "ok");
+  else toast("Connect failed — not connected", "err");
 }
 function togglePw() {
   const f = el("new-pass");
@@ -951,66 +745,6 @@ function setupDnD() {
   });
 }
 
-/* ═════ LOAD SETTINGS ═══════════════════ */
-async function loadSettings() {
-  const d = await apiGet("/api/settings");
-  if (!d) return;
-  if (d.color) {
-    S.color = d.color;
-    setValueIfIdle("dp-color", d.color);
-  }
-  if (d.brightness != null) {
-    S.brightness = d.brightness;
-    if (!isFocused("dp-brt")) updateBrightnessUi(d.brightness);
-  }
-  if (d.display_mode) {
-    S.displayMode = d.display_mode;
-    setValueIfIdle("dp-mode", d.display_mode);
-  }
-  if (d.display_value != null) {
-    S.displayValue = d.display_value;
-    setValueIfIdle("dp-value", String(d.display_value));
-  }
-  if (d.display_text != null) {
-    S.displayText = d.display_text;
-    setValueIfIdle("dp-text", d.display_text);
-  }
-  if (d.time_format) {
-    applyFmtUi(d.time_format);
-  }
-  const bmap = {
-    "dp-blink": "anim_colon",
-    "dp-scroll": "anim_scroll",
-    "dp-pulse": "anim_pulse",
-    "dp-trans": "anim_transition",
-    "ps-dim": "ps_dim",
-    "ps-wifi": "ps_wifi",
-    "al1-en": "alarm1_en",
-    "al2-en": "alarm2_en",
-  };
-  Object.keys(bmap).forEach(function (eid) {
-    const k = bmap[eid];
-    if (d[k] != null) setCheckedIfIdle(eid, d[k]);
-  });
-  if (d.anim_colon != null) S.blink = d.anim_colon;
-  if (d.anim_scroll != null) S.scroll = d.anim_scroll;
-  if (d.anim_pulse != null) S.pulse = d.anim_pulse;
-  if (d.anim_transition != null) S.transition = d.anim_transition;
-  if (d.reaction_effect) setValueIfIdle("dp-react", d.reaction_effect);
-  if (d.timezone) setValueIfIdle("tz-sel", d.timezone);
-  if (d.ntp_server) setValueIfIdle("ntp-srv", d.ntp_server);
-  if (d.notif_type) setValueIfIdle("notif-type", d.notif_type);
-  if (d.notif_sound) setValueIfIdle("notif-sound", d.notif_sound);
-  if (d.sleep_mode) setValueIfIdle("sl-mode", d.sleep_mode);
-  if (d.alarm1_time) setValueIfIdle("al1-t", d.alarm1_time);
-  if (d.alarm2_time) setValueIfIdle("al2-t", d.alarm2_time);
-  if (d.sleep_timeout != null) setValueIfIdle("sl-timeout", String(d.sleep_timeout));
-  if (d.batt_alert_pct != null) setValueIfIdle("batt-alert", String(d.batt_alert_pct));
-  markActiveSwatch();
-  syncDisplayModeInputs();
-  updateDispInfo();
-}
-
 function initNavState() {
   let page = "dashboard";
   let sec = "sys";
@@ -1027,24 +761,283 @@ function initNavState() {
   }
 }
 
+/* ═════ WebSocket client ════════════════ */
+
+/* Send a command frame to the device over the WebSocket.
+   Returns true if the frame was queued successfully. */
+function wsSend(cmd, data) {
+  if (!S.ws || S.ws.readyState !== WebSocket.OPEN) return false;
+  try {
+    S.ws.send(JSON.stringify(Object.assign({ cmd: cmd }, data || {})));
+    return true;
+  } catch (e) {
+    console.warn("wsSend failed:", e);
+    return false;
+  }
+}
+
+/* WS-only command sender. Returns {status:"ok"} optimistically, or null if not connected. */
+async function apiCmd(cmd, data) {
+  if (wsSend(cmd, data)) {
+    markConnectionSeen();
+    return { status: "ok" };
+  }
+  console.warn("apiCmd: WebSocket not ready, cmd dropped:", cmd);
+  toast("Not connected", "err", 1500);
+  return null;
+}
+
+function handleWsMessage(d) {
+  if (!d) return;
+
+  /* ── Fast path: display-only frame (type:"disp", 20 fps) ──────── */
+  if (d.type === "disp") {
+    if (d.display && d.display.available !== false) {
+      S.display = d.display;
+      if (!_db.disp) {
+        if (d.display.mode)               S.displayMode = d.display.mode;
+        if (d.display.brightness != null) S.brightness  = d.display.brightness;
+      }
+      setText("live-time", displayText(d.display));
+      updateDispInfo();
+    }
+    return;   /* rAF loop will paint on its own schedule */
+  }
+  /* ── Full-state frame (type:"full", 1 fps) — fall through ─────── */
+  if (d.uptime_s != null) {
+    setText("d-uptime", fmtUptime(d.uptime_s));
+    setText("i-uptime", fmtUptime(d.uptime_s));
+  }
+  if (d.free_heap != null) {
+    setText("d-heap", fmtBytes(d.free_heap));
+    setText("i-heap", fmtBytes(d.free_heap));
+  }
+  if (d.rssi != null) setText("d-rssi", d.rssi + " dBm");
+  if (d.sta_ip || d.ap_ip) setText("d-ip", d.sta_ip || d.ap_ip || "—");
+  if (d.temperature != null) {
+    setText("d-temp", fmtTemperature(d.temperature));
+    setText("i-temp", fmtTemperature(d.temperature));
+  }
+  if (d.app_version) {
+    setText("d-fw", d.app_version);
+    setText("fw-ver", d.app_version);
+  }
+  if (d.sta_connected != null) {
+    const dot = el("wdot"), lbl = el("wifi-label");
+    if (dot) dot.className = "wdot " + (d.sta_connected ? "up" : "down");
+    if (lbl) lbl.textContent = d.sta_connected ? d.sta_ssid || "Connected" : "Offline";
+  }
+
+  /* ── System info tab ── */
+  if (d.total_heap && d.free_heap) {
+    const ramPct = Math.round((1 - d.free_heap / d.total_heap) * 100);
+    setBar("ram", ramPct, "ram-pct");
+  }
+  setBar("cpu",    d.cpu_usage      || 0, "cpu-pct");
+  setBar("flash",  d.flash_used_pct || 0, "flash-pct");
+  setBar("spiffs", d.spiffs_used_pct || 0, "spiffs-pct");
+  if (d.chip_model)    setText("i-chip",    d.chip_model);
+  if (d.cpu_cores)     setText("i-cores",   d.cpu_cores);
+  if (d.cpu_freq_mhz)  setText("i-freq",    d.cpu_freq_mhz + " MHz");
+  if (d.flash_size)    setText("i-flash",   fmtBytes(d.flash_size));
+  if (d.min_free_heap) setText("i-minheap", fmtBytes(d.min_free_heap));
+  if (d.reset_reason)  setText("i-reset",   d.reset_reason);
+
+  /* ── Firmware / OTA tab ── */
+  if (d.build_date)        setText("fw-date",   d.build_date);
+  if (d.idf_version)       setText("fw-idf",    d.idf_version);
+  if (d.ota_slot)          setText("fw-slot",   d.ota_slot);
+  if (d.app0_state)        setText("fw-app0",   d.app0_state);
+  if (d.app1_state)        setText("fw-app1",   d.app1_state);
+  if (d.spiffs_used_pct != null) setText("fw-spiffs", d.spiffs_used_pct + "%");
+
+  /* ── Display state ── */
+  if (d.display && d.display.available !== false) {
+    S.display = d.display;
+    /* Only sync display-derived S.* fields when no edit is in flight */
+    if (!_db.disp) {
+      if (d.display.mode)               S.displayMode = d.display.mode;
+      if (d.display.brightness != null) S.brightness  = d.display.brightness;
+    }
+    setText("live-time", displayText(d.display));
+    updateDispInfo();
+    /* rAF loop repaints the canvas — no manual renderDisplay calls needed */
+  }
+
+  /* ── WiFi status + profiles ── */
+  if (d.wifi) {
+    const w = d.wifi;
+    S.wifi = w;
+    const dot = el("wsc-dot");
+    if (dot) dot.className = "wsc-dot " + (w.connected ? "on" : "off");
+    setText("wsc-ssid", w.connected ? w.ssid || "—" : "Not connected");
+    setText("wsc-detail",
+      w.connected
+        ? (w.ip || "—") + " · " + (w.rssi || "—") + " dBm" +
+          (w.channel ? " · Ch" + w.channel : "")
+        : "Searching…"
+    );
+    const ic = el("rssi-ic"), rv = el("rssi-v");
+    if (rv) rv.textContent = w.rssi ? w.rssi + " dBm" : "— dBm";
+    if (ic) {
+      let s = 0;
+      if (w.rssi >= -55) s = 4;
+      else if (w.rssi >= -65) s = 3;
+      else if (w.rssi >= -75) s = 2;
+      else if (w.rssi) s = 1;
+      ic.className = "rssi-ic" + (s ? " s" + s : "");
+    }
+    const hdot = el("wdot"), hlbl = el("wifi-label");
+    if (hdot) hdot.className = "wdot " + (w.connected ? "up" : "down");
+    if (hlbl) hlbl.textContent = w.connected ? w.ssid || "Connected" : "Offline";
+    renderProfiles(w.profiles || []);
+  }
+
+  /* ── Power / battery ── */
+  if (d.power) {
+    const p = d.power;
+    const pct = p.battery_pct || 0;
+    const bar = el("batt-fill");
+    if (bar) {
+      bar.style.width = Math.min(100, pct) + "%";
+      bar.className = "batt-fill" + (pct < 20 ? " low" : pct < 50 ? " mid" : "");
+    }
+    setText("batt-txt",  pct + "%");
+    setText("batt-v",    p.voltage ? p.voltage.toFixed(2) + "V" : "—V");
+    setText("batt-ma",   p.current ? p.current + "mA" : "—mA");
+    setText("pwr-src",   p.source  || "—");
+    setText("batt-eta",  p.eta_hours ? p.eta_hours.toFixed(1) + "h" : "—h");
+    if (p.sleep_mode     != null) setValueIfIdle("sl-mode",    p.sleep_mode);
+    if (p.sleep_timeout  != null) setValueIfIdle("sl-timeout", String(p.sleep_timeout));
+    if (p.batt_alert_pct != null) setValueIfIdle("batt-alert", String(p.batt_alert_pct));
+    if (p.ps_dim  != null) setCheckedIfIdle("ps-dim",  p.ps_dim);
+    if (p.ps_wifi != null) setCheckedIfIdle("ps-wifi", p.ps_wifi);
+  }
+
+  /* ── Settings (only apply when inputs aren't actively focused
+        AND no user edit is pending for that group)              ── */
+  if (d.settings) {
+    const s = d.settings;
+
+    /* Display group — skip entirely if user is mid-edit */
+    if (!_db.disp) {
+      if (s.color && !isFocused("dp-color")) {
+        S.color = s.color;
+        setValueIfIdle("dp-color", s.color);
+      }
+      if (s.brightness != null && !isFocused("dp-brt")) {
+        S.brightness = s.brightness;
+        updateBrightnessUi(s.brightness);
+      }
+      if (s.display_mode  && !isFocused("dp-mode"))  { S.displayMode  = s.display_mode;          setValueIfIdle("dp-mode",  s.display_mode); }
+      if (s.display_value != null && !isFocused("dp-value")) { S.displayValue = s.display_value;  setValueIfIdle("dp-value", String(s.display_value)); }
+      if (s.display_text  != null && !isFocused("dp-text"))  { S.displayText  = s.display_text;   setValueIfIdle("dp-text",  s.display_text); }
+      if (s.anim_colon      != null && !isFocused("dp-blink")) { S.blink      = s.anim_colon;      setCheckedIfIdle("dp-blink", s.anim_colon); }
+      if (s.anim_scroll     != null && !isFocused("dp-scroll")){ S.scroll     = s.anim_scroll;     setCheckedIfIdle("dp-scroll",s.anim_scroll); }
+      if (s.anim_pulse      != null && !isFocused("dp-pulse")) { S.pulse      = s.anim_pulse;      setCheckedIfIdle("dp-pulse", s.anim_pulse); }
+      if (s.anim_transition != null && !isFocused("dp-trans")) { S.transition = s.anim_transition; setCheckedIfIdle("dp-trans", s.anim_transition); }
+      if (s.reaction_effect && !isFocused("dp-react")) setValueIfIdle("dp-react", s.reaction_effect);
+      markActiveSwatch();
+      syncDisplayModeInputs();
+    }
+
+    /* Clock group — skip entirely if user is mid-edit */
+    if (!_db.clock) {
+      if (s.time_format) applyFmtUi(s.time_format);
+      if (s.timezone   && !isFocused("tz-sel"))   setValueIfIdle("tz-sel",     s.timezone);
+      if (s.ntp_server && !isFocused("ntp-srv"))  setValueIfIdle("ntp-srv",    s.ntp_server);
+      if (s.notif_type && !isFocused("notif-type"))  setValueIfIdle("notif-type",  s.notif_type);
+      if (s.notif_sound && !isFocused("notif-sound")) setValueIfIdle("notif-sound", s.notif_sound);
+      if (s.alarm1_time && !isFocused("al1-t"))   setValueIfIdle("al1-t",      s.alarm1_time);
+      if (s.alarm2_time && !isFocused("al2-t"))   setValueIfIdle("al2-t",      s.alarm2_time);
+      if (s.alarm1_en != null) setCheckedIfIdle("al1-en", s.alarm1_en);
+      if (s.alarm2_en != null) setCheckedIfIdle("al2-en", s.alarm2_en);
+    }
+
+    /* Power group — skip entirely if user is mid-edit */
+    if (!_db.power) {
+      if (s.ps_dim  != null) setCheckedIfIdle("ps-dim",  s.ps_dim);
+      if (s.ps_wifi != null) setCheckedIfIdle("ps-wifi", s.ps_wifi);
+      if (s.sleep_mode     && !isFocused("sl-mode"))    setValueIfIdle("sl-mode",    s.sleep_mode);
+      if (s.sleep_timeout  != null && !isFocused("sl-timeout"))  setValueIfIdle("sl-timeout",  String(s.sleep_timeout));
+      if (s.batt_alert_pct != null && !isFocused("batt-alert"))  setValueIfIdle("batt-alert",  String(s.batt_alert_pct));
+    }
+  }
+
+  /* ── Incremental log entries ── */
+  if (d.logs) {
+    const entries = d.logs.logs || d.logs.entries || [];
+    if (entries.length) {
+      entries.forEach(addLogEntry);
+      S.lastSeq = d.logs.next_seq || S.lastSeq + entries.length;
+      setText("log-ts", "Updated " + new Date().toLocaleTimeString());
+    }
+  }
+
+  updateDispInfo();
+  updateConnectionBadge();
+}
+
+function initWebSocket() {
+  /* Close any previous socket */
+  if (S.ws) {
+    try { S.ws.close(); } catch (_) {}
+    S.ws = null;
+  }
+
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const url   = proto + "//" + location.host + "/ws";
+  let   ws;
+  try {
+    ws = new WebSocket(url);
+  } catch (e) {
+    console.warn("WebSocket init error:", e);
+    setTimeout(initWebSocket, S.wsRetryMs);
+    return;
+  }
+
+  S.ws = ws;
+
+  ws.onopen = function () {
+    S.wsConnected = true;
+    markConnectionSeen();
+    console.info("WS connected →", url);
+  };
+
+  ws.onmessage = function (evt) {
+    markConnectionSeen();
+    try {
+      handleWsMessage(JSON.parse(evt.data));
+    } catch (e) {
+      console.warn("WS parse error:", e);
+    }
+  };
+
+  ws.onerror = function (e) {
+    console.warn("WS error:", e);
+  };
+
+  ws.onclose = function () {
+    S.wsConnected = false;
+    S.ws = null;
+    markConnectionLost();
+    console.info("WS closed — retrying in", S.wsRetryMs, "ms");
+    setTimeout(initWebSocket, S.wsRetryMs);
+  };
+}
+
 /* ═════ INIT ═════════════════════════════ */
-async function init() {
+function init() {
   initTheme();
   setupDnD();
   updateConnectionBadge();
   window.addEventListener("resize", function () {
     resizeAll();
-    renderDisplay("vd-canvas");
-    renderDisplay("prev-canvas");
   });
-  await loadSettings();
-  updateBrightnessUi(S.brightness);
   initNavState();
-  await doRefresh(true);
-  startLogPoll();
-  S.timers.live = setInterval(runLiveRefresh, S.liveTickMs);
+  resizeAll();
+  startRenderLoop();
+  initWebSocket();
   S.timers.conn = setInterval(updateConnectionBadge, 250);
-  setInterval(tick, 500);
-  tick();
 }
 document.addEventListener("DOMContentLoaded", init);

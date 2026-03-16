@@ -7,6 +7,7 @@ idf_component_register(
         spiffs
         esp_partition
         esp_timer
+        esp_http_server
         app_update
         spi_flash
         esp_driver_tsens

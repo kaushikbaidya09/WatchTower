@@ -120,7 +120,7 @@ void app_main(void)
 
     /* ---- Core 0 -------------------------------------------------- */
     xTaskCreatePinnedToCore(wt_task_wifi, "WT_WIFI", 8192, NULL, 4, NULL, 0);
-    xTaskCreatePinnedToCore(wt_task_web, "WT_WEB", 8192, NULL, 3, NULL, 0);
+    xTaskCreatePinnedToCore(wt_task_web, "WT_WEB", 16384, NULL, 3, NULL, 0);
 
     /* ---- Core 1 -------------------------------------------------- */
     xTaskCreatePinnedToCore(wt_task_led, "WT_LED", 16384, NULL, 5, NULL, 1);

@@ -11,7 +11,7 @@
 #include "driver/rmt_tx.h"
 
 #define RMT_RESOLUTION_HZ 10000000 ///< RMT clock 10 MHz → 1 tick = 0.1 µs
-#define RMT_GPIO_NUM 48            ///< GPIO pin connected to strip data-in
+#define RMT_GPIO_NUM 14            ///< GPIO pin connected to strip data-in
 #define FRAME_MS 20                ///< Render period in ms (50 fps)
 #define PULSE_SPEED 0.08f          ///< Phase increment/frame, PULSE  (~1.6 s/breath)
 #define RAINBOW_SPEED 0.04f        ///< Phase increment/frame, RAINBOW (~3.1 s/cycle)

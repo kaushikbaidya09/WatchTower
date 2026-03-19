@@ -19,6 +19,7 @@
 #include "esp_system.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "driver/gpio.h"
 
 #include "wt_app_log.h"
 #include "wt_app_wifi.h"
@@ -26,6 +27,8 @@
 #include "wt_app_led.h"
 #include "wt_app_settings.h"
 #include "wt_seg_display.h"
+
+#define GPIO_OUTPUT_PIN 11
 
 /* ------------------------------------------------------------------ */
 /*  Main display task                                                    */
@@ -117,6 +120,24 @@ void app_main(void)
 
     /* Load persistent settings from NVS */
     wt_settings_init();
+
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << GPIO_OUTPUT_PIN),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE};
+    gpio_config(&io_conf);
+
+    gpio_set_level(GPIO_OUTPUT_PIN, 1);
+    printf("GPIO 11 HIGH\n");
+
+    // Wait for 1 second
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    // Set GPIO low
+    gpio_set_level(GPIO_OUTPUT_PIN, 0);
+    printf("GPIO 11 LOW\n");
 
     /* ---- Core 0 -------------------------------------------------- */
     xTaskCreatePinnedToCore(wt_task_wifi, "WT_WIFI", 8192, NULL, 4, NULL, 0);

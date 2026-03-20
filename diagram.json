@@ -6,8 +6,8 @@
     {
       "type": "board-esp32-s3-devkitc-1",
       "id": "esp",
-      "top": -48.18,
-      "left": -177.83,
+      "top": -124.98,
+      "left": -168.23,
       "attrs": { "builder": "esp-idf" }
     },
     {
@@ -237,6 +237,13 @@
       "left": -577.8,
       "rotate": 270,
       "attrs": { "pixels": "2", "pixelShape": "square" }
+    },
+    {
+      "type": "wokwi-buzzer",
+      "id": "bz1",
+      "top": -103.2,
+      "left": -247.8,
+      "attrs": { "volume": "100.0" }
     }
   ],
   "connections": [
@@ -261,9 +268,9 @@
     [ "strip5:VSS.2", "strip6:VSS", "black", [ "v0" ] ],
     [ "strip6:VSS.2", "strip7:VSS", "black", [ "v0" ] ],
     [ "strip7:VSS.2", "strip8:VSS", "black", [ "h0" ] ],
-    [ "esp:48", "strip2:DIN", "green", [ "h9.6", "v67.2", "h-115.2", "v-106" ] ],
-    [ "strip2:VDD", "esp:5V", "red", [ "h86.4", "v76.8" ] ],
-    [ "strip2:VSS", "esp:GND.1", "black", [ "h86.4", "v106.4" ] ],
+    [ "esp:14", "strip2:DIN", "green", [ "h9.6", "h-28.85", "v-77.2" ] ],
+    [ "strip2:VDD", "esp:5V", "red", [ "h86.4", "v57.6" ] ],
+    [ "strip2:VSS", "esp:GND.1", "black", [ "h57.6", "v29.6" ] ],
     [ "strip1:DOUT", "strip9:DIN", "green", [ "h0" ] ],
     [ "strip9:DOUT", "strip10:DIN", "green", [ "v0" ] ],
     [ "strip10:DOUT", "strip11:DIN", "green", [ "h0" ] ],
@@ -332,7 +339,9 @@
     [ "strip29:VSS.2", "strip15:VSS", "black", [ "v-5.2", "h-39.2", "v28" ] ],
     [ "strip21:VDD.2", "strip22:VDD", "red", [ "v0" ] ],
     [ "strip21:DOUT", "strip22:DIN", "green", [ "v0" ] ],
-    [ "strip21:VSS.2", "strip22:VSS", "black", [ "v0" ] ]
+    [ "strip21:VSS.2", "strip22:VSS", "black", [ "v0" ] ],
+    [ "bz1:1", "esp:GND.1", "black", [ "v0" ] ],
+    [ "bz1:2", "esp:11", "red", [ "v0" ] ]
   ],
   "dependencies": {}
 }

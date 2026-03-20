@@ -27,6 +27,7 @@
 #include "wt_app_led.h"
 #include "wt_app_settings.h"
 #include "wt_seg_display.h"
+#include "wt_app_sound.h"
 
 #define GPIO_OUTPUT_PIN 11
 #define WT_MAIN_POLL_MS 1000
@@ -122,24 +123,6 @@ void app_main(void)
     /* Load persistent settings from NVS */
     wt_settings_init();
 
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << GPIO_OUTPUT_PIN),
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE};
-    gpio_config(&io_conf);
-
-    gpio_set_level(GPIO_OUTPUT_PIN, 1);
-    printf("GPIO 11 HIGH\n");
-
-    // Wait for 1 second
-    vTaskDelay(pdMS_TO_TICKS(1000));
-
-    // Set GPIO low
-    gpio_set_level(GPIO_OUTPUT_PIN, 0);
-    printf("GPIO 11 LOW\n");
-
     /* ---- Core 0 -------------------------------------------------- */
     xTaskCreatePinnedToCore(wt_task_wifi, "WT_WIFI", 8192, NULL, 4, NULL, 0);
     xTaskCreatePinnedToCore(wt_task_web, "WT_WEB", 16384, NULL, 3, NULL, 0);
@@ -147,9 +130,16 @@ void app_main(void)
     /* ---- Core 1 -------------------------------------------------- */
     xTaskCreatePinnedToCore(wt_task_led, "WT_LED", 16384, NULL, 5, NULL, 1);
     xTaskCreatePinnedToCore(wt_task_main, "WT_MAIN", 4096, NULL, 4, NULL, 1);
+    xTaskCreatePinnedToCore(wt_task_sound, "WT_SOUND", 4096, NULL, 4, NULL, 1);
 
     while (1)
     {
+        // Test sound events
+        // for (int i = 1; i < TOTAL_SOUNDS; i++) // skip NO_SOUND (0)
+        // {
+        //     wt_sound_play_event((wt_sound_event_t)i);
+        //     vTaskDelay(pdMS_TO_TICKS(3000));
+        // }
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
 }

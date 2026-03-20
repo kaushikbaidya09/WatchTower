@@ -1,0 +1,9 @@
+idf_component_register(
+    SRCS 
+        "wt_app_sound.c"
+    INCLUDE_DIRS 
+        "include"
+    REQUIRES
+        driver
+        wt_app_log
+)

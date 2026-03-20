@@ -119,9 +119,6 @@ int wt_log_read_json(uint32_t from_seq, char *out_buf,
                     "{\"seq\":%lu,\"entries\":[", cur_seq);
 
     /* Walk ring buffer oldest→newest */
-    uint32_t total = (cur_write < WT_LOG_BUF_ENTRIES)
-                         ? cur_write
-                         : (uint32_t)WT_LOG_BUF_ENTRIES;
     uint32_t start = (cur_write >= WT_LOG_BUF_ENTRIES)
                          ? cur_write - WT_LOG_BUF_ENTRIES
                          : 0;

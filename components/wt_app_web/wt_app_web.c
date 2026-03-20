@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <math.h>
 #include <sys/stat.h>
 
@@ -28,6 +29,10 @@
 #include "driver/temperature_sensor.h"
 #include "cJSON.h"
 
+/* Captive-portal DNS server */
+#include "lwip/sockets.h"
+#include "lwip/netdb.h"
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                           */
 /* ------------------------------------------------------------------ */
@@ -40,7 +45,6 @@
         httpd_resp_sendstr((req), (json_str));                         \
     } while (0)
 
-/* Used by the two OTA handlers only */
 #define RESP_ERR(req, msg)                                    \
     do                                                        \
     {                                                         \
@@ -69,12 +73,12 @@ static bool s_temp_sensor_ready = false;
 /*  WebSocket state                                                    */
 /* ------------------------------------------------------------------ */
 
-#define WS_MAX_CLIENTS 4
-#define WS_DISPLAY_INTERVAL_MS 50 /* display-only push: 20 fps              */
-#define WS_FULL_INTERVAL_MS 500   /* full-state push: system/wifi/power/logs */
+#define WS_MAX_CLIENTS 4          ///< Maximum allowed clients
+#define WS_DISPLAY_INTERVAL_MS 50 ///< Web Display fetch refresh rate
+#define WS_FULL_INTERVAL_MS 2000  ///< Full system updates rate (system/wifi/power/logs)
+#define WS_DISPLAY_PAYLOAD 1536   ///< display-only frame ~700 B
+#define WS_PAYLOAD_SIZE 12288     ///< full frame
 #define WS_FULL_TICKS (WS_FULL_INTERVAL_MS / WS_DISPLAY_INTERVAL_MS)
-#define WS_DISPLAY_PAYLOAD 1536 /* display-only frame ~700 B               */
-#define WS_PAYLOAD_SIZE 12288   /* full frame: system+display+wifi+power+settings+logs */
 
 static httpd_handle_t s_http_server = NULL;
 static int s_ws_fds[WS_MAX_CLIENTS];
@@ -301,6 +305,46 @@ static bool read_mcu_temperature_c(float *out_celsius)
     return true;
 }
 
+/* Read entire request body (up to max_len).  Returns bytes read or -1. */
+static int read_body(httpd_req_t *req, char *buf, size_t max_len)
+{
+    int total = 0;
+    int remaining = req->content_len;
+    if (remaining <= 0)
+        return 0;
+
+    while (remaining > 0)
+    {
+        int to_read = (remaining < (int)(max_len - total - 1))
+                          ? remaining
+                          : (int)(max_len - total - 1);
+        int n = httpd_req_recv(req, buf + total, to_read);
+        if (n <= 0)
+        {
+            if (n == HTTPD_SOCK_ERR_TIMEOUT)
+                continue;
+            return -1;
+        }
+        total += n;
+        remaining -= n;
+    }
+    buf[total] = '\0';
+    return total;
+}
+
+/* Query-string helper */
+static bool get_query_int(httpd_req_t *req, const char *key, int *out)
+{
+    char qbuf[64];
+    char val[16];
+    if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) != ESP_OK)
+        return false;
+    if (httpd_query_key_value(qbuf, key, val, sizeof(val)) != ESP_OK)
+        return false;
+    *out = atoi(val);
+    return true;
+}
+
 static const char *anim_to_string(wt_segd_anim_t anim)
 {
     switch (anim)
@@ -510,6 +554,595 @@ static esp_err_t handler_app_js(httpd_req_t *req)
     return serve_file(req, APP_JS, "application/javascript");
 }
 
+/* ------------------------------------------------------------------ */
+/*  GET /api/system                                                   */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_system(httpd_req_t *req)
+{
+    esp_chip_info_t chip;
+    esp_chip_info(&chip);
+
+    uint32_t flash_size = 0;
+    esp_flash_get_size(NULL, &flash_size);
+
+    uint32_t free_heap = esp_get_free_heap_size();
+    uint32_t total_heap = esp_get_minimum_free_heap_size() + free_heap; /* approx */
+    uint32_t min_heap = esp_get_minimum_free_heap_size();
+    int64_t uptime_s = esp_timer_get_time() / 1000000;
+
+    /* OTA partition info */
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *app0 = esp_partition_find_first(
+        ESP_PARTITION_TYPE_APP,
+        ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
+    const esp_partition_t *app1 = esp_partition_find_first(
+        ESP_PARTITION_TYPE_APP,
+        ESP_PARTITION_SUBTYPE_APP_OTA_1, NULL);
+    char ota_slot[8] = "app0";
+    char app0_st[12] = "valid";
+    char app1_st[12] = "empty";
+    if (running && app1 && running->address == app1->address)
+    {
+        strlcpy(ota_slot, "app1", sizeof(ota_slot));
+    }
+    (void)app0;
+    (void)app1_st;
+
+    /* SPIFFS usage */
+    size_t spiffs_total = 0, spiffs_used = 0;
+    esp_spiffs_info("spiffs", &spiffs_total, &spiffs_used);
+    int spiffs_pct = spiffs_total ? (int)(spiffs_used * 100 / spiffs_total) : 0;
+
+    /* WiFi status for dashboard */
+    wt_wifi_status_t wst = wt_wifi_get_status();
+    float temperature_c = NAN;
+    bool has_temperature = read_mcu_temperature_c(&temperature_c);
+
+    /* Reset reason */
+    const char *reset_reason = "unknown";
+    switch (esp_reset_reason())
+    {
+    case ESP_RST_POWERON:
+        reset_reason = "power-on";
+        break;
+    case ESP_RST_SW:
+        reset_reason = "software";
+        break;
+    case ESP_RST_PANIC:
+        reset_reason = "panic";
+        break;
+    case ESP_RST_WDT:
+        reset_reason = "watchdog";
+        break;
+    case ESP_RST_DEEPSLEEP:
+        reset_reason = "deep-sleep";
+        break;
+    default:
+        break;
+    }
+
+    const char *chip_name =
+        (chip.model == CHIP_ESP32) ? "ESP32" : (chip.model == CHIP_ESP32S2) ? "ESP32-S2"
+                                           : (chip.model == CHIP_ESP32S3)   ? "ESP32-S3"
+                                           : (chip.model == CHIP_ESP32C3)   ? "ESP32-C3"
+                                                                            : "Unknown";
+
+    /* Build a flat JSON object with all fields the web UI needs */
+    static char buf[1024];
+    snprintf(buf, sizeof(buf),
+             "{"
+             "\"chip_model\":\"%s\","
+             "\"cpu_cores\":%d,"
+             "\"cpu_freq_mhz\":240,"
+             "\"cpu_usage\":0,"
+             "\"flash_size\":%u,"
+             "\"flash_used_pct\":0,"
+             "\"free_heap\":%lu,"
+             "\"total_heap\":%lu,"
+             "\"min_free_heap\":%lu,"
+             "\"spiffs_used_pct\":%d,"
+             "\"uptime_s\":%lld,"
+             "\"app_version\":\"%s\","
+             "\"build_date\":\"%s %s\","
+             "\"idf_version\":\"%s\","
+             "\"ota_slot\":\"%s\","
+             "\"app0_state\":\"%s\","
+             "\"app1_state\":\"%s\","
+             "\"temperature\":%.1f,"
+             "\"reset_reason\":\"%s\","
+             "\"sta_connected\":%s,"
+             "\"sta_ssid\":\"%s\","
+             "\"sta_ip\":\"%s\","
+             "\"rssi\":%d,"
+             "\"ap_ip\":\"%s\""
+             "}",
+             chip_name,
+             chip.cores,
+             (unsigned)(flash_size),
+             free_heap, total_heap, min_heap,
+             spiffs_pct,
+             (long long)uptime_s,
+             "1.0.0",
+             __DATE__, __TIME__,
+             esp_get_idf_version(),
+             ota_slot, app0_st, "empty",
+             has_temperature ? temperature_c : 0.0f,
+             reset_reason,
+             wst.sta_connected ? "true" : "false",
+             wst.sta_ssid,
+             wst.sta_ip,
+             wst.sta_rssi,
+             wst.ap_ip);
+
+    RESP_JSON(req, buf);
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  GET /api/logs?seq=N                                               */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_logs(httpd_req_t *req)
+{
+    int seq_in = 0;
+    /* Accept both ?seq= (native) and ?since= (JS legacy) */
+    if (!get_query_int(req, "seq", &seq_in))
+        get_query_int(req, "since", &seq_in);
+
+    static char log_buf[8192];
+    uint32_t next_seq = 0;
+    wt_log_read_json((uint32_t)seq_in, log_buf, sizeof(log_buf), &next_seq);
+    RESP_JSON(req, log_buf);
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  GET /api/display                                                  */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_display(httpd_req_t *req)
+{
+    wt_segd_snapshot_t snapshot;
+    if (!wt_segd_snapshot_get(&snapshot))
+    {
+        RESP_JSON(req, "{\"available\":false}");
+        return ESP_OK;
+    }
+
+    int brightness = (snapshot.request.intensity * 100) / 255;
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "available", true);
+    cJSON_AddStringToObject(root, "mode", mode_to_string(snapshot.request.mode));
+    cJSON_AddStringToObject(root, "anim", anim_to_string(snapshot.request.anim));
+    cJSON_AddNumberToObject(root, "brightness", brightness);
+    cJSON_AddBoolToObject(root, "colon", snapshot.colon_on);
+    cJSON_AddBoolToObject(root, "colon_blink", snapshot.request.colon_blink);
+    cJSON_AddNumberToObject(root, "time_format", snapshot.request.time_format);
+
+    cJSON *digits = cJSON_AddArrayToObject(root, "digits");
+    for (int i = 0; i < WT_SEGD_NUM_DIGITS; ++i)
+    {
+        cJSON_AddItemToArray(digits, cJSON_CreateNumber(snapshot.frame.digit[i]));
+    }
+
+    cJSON_AddItemToObject(root, "color_on", color_to_json(snapshot.request.color_on));
+    cJSON_AddItemToObject(root, "color_off", color_to_json(snapshot.request.color_off));
+    cJSON_AddItemToObject(root, "colon_color", color_to_json(snapshot.colon_color));
+
+    cJSON *digit_colors = cJSON_AddArrayToObject(root, "digit_colors");
+    for (int digit = 0; digit < WT_SEGD_NUM_DIGITS; ++digit)
+    {
+        cJSON *seg_colors = cJSON_CreateArray();
+        for (int seg = 0; seg < WT_SEGD_SEGS_PER_DIGIT; ++seg)
+        {
+            cJSON_AddItemToArray(seg_colors, color_to_json(snapshot.digit_color[digit][seg]));
+        }
+        cJSON_AddItemToArray(digit_colors, seg_colors);
+    }
+
+    char *json = cJSON_PrintUnformatted(root);
+    RESP_JSON(req, json);
+    free(json);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  GET /api/wifi                                                     */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_wifi_get(httpd_req_t *req)
+{
+    wt_wifi_status_t st = wt_wifi_get_status();
+    wt_wifi_profile_t prof[WT_WIFI_MAX_PROFILES];
+    int cnt = wt_wifi_get_profiles(prof, WT_WIFI_MAX_PROFILES);
+
+    /* Return a unified flat object; JS reads both connected status and profiles */
+    cJSON *root = cJSON_CreateObject();
+
+    /* Flat STA fields (for /api/wifi/status) */
+    cJSON_AddBoolToObject(root, "connected", st.sta_connected);
+    cJSON_AddStringToObject(root, "ssid", st.sta_ssid);
+    cJSON_AddStringToObject(root, "ip", st.sta_ip);
+    cJSON_AddNumberToObject(root, "rssi", st.sta_rssi);
+    cJSON_AddNumberToObject(root, "channel", 0);
+    cJSON_AddStringToObject(root, "ap_ip", st.ap_ip);
+    cJSON_AddBoolToObject(root, "ap_active", st.ap_active);
+    cJSON_AddStringToObject(root, "ap_ssid", st.ap_ssid);
+    cJSON_AddNumberToObject(root, "ap_clients", st.ap_clients);
+
+    /* Profiles array (for /api/wifi/profiles) */
+    cJSON *profiles = cJSON_AddArrayToObject(root, "profiles");
+    for (int i = 0; i < cnt; i++)
+    {
+        cJSON *p = cJSON_CreateObject();
+        cJSON_AddNumberToObject(p, "idx", i);
+        cJSON_AddStringToObject(p, "ssid", prof[i].ssid);
+        cJSON_AddBoolToObject(p, "has_pass", strlen(prof[i].passwd) > 0);
+        cJSON_AddItemToArray(profiles, p);
+    }
+
+    char *s = cJSON_PrintUnformatted(root);
+    RESP_JSON(req, s);
+    free(s);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  POST /api/wifi/profile  — add                                     */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_wifi_add_profile(httpd_req_t *req)
+{
+    char body[256];
+    if (read_body(req, body, sizeof(body)) < 0)
+    {
+        RESP_ERR(req, "read failed");
+        return ESP_OK;
+    }
+    cJSON *j = cJSON_Parse(body);
+    if (!j)
+    {
+        RESP_ERR(req, "json parse error");
+        return ESP_OK;
+    }
+
+    const char *ssid = cJSON_GetStringValue(cJSON_GetObjectItem(j, "ssid"));
+
+    /* Accept both "password" (JS) and "passwd" (legacy) */
+    cJSON *passj = cJSON_GetObjectItem(j, "password");
+    if (!passj)
+        passj = cJSON_GetObjectItem(j, "passwd");
+    const char *passwd = passj ? cJSON_GetStringValue(passj) : "";
+
+    bool ok = ssid && wt_wifi_add_profile(ssid, passwd ? passwd : "");
+    cJSON_Delete(j);
+
+    RESP_JSON(req, ok ? "{\"status\":\"ok\"}" : "{\"status\":\"err\",\"error\":\"full or invalid\"}");
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  DELETE /api/wifi/profile?idx=N                                    */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_wifi_del_profile(httpd_req_t *req)
+{
+    int idx = -1;
+
+    /* Try query param first (DELETE requests) */
+    get_query_int(req, "idx", &idx);
+
+    /* Also try JSON body (POST requests from JS) */
+    if (idx < 0 && req->content_len > 0)
+    {
+        char body[128];
+        if (read_body(req, body, sizeof(body)) > 0)
+        {
+            cJSON *j = cJSON_Parse(body);
+            if (j)
+            {
+                cJSON *idxj = cJSON_GetObjectItem(j, "index");
+                if (!idxj)
+                    idxj = cJSON_GetObjectItem(j, "idx");
+                if (idxj)
+                    idx = (int)cJSON_GetNumberValue(idxj);
+                cJSON_Delete(j);
+            }
+        }
+    }
+
+    if (idx < 0)
+    {
+        RESP_ERR(req, "missing idx");
+        return ESP_OK;
+    }
+
+    bool ok = wt_wifi_remove_profile(idx);
+    RESP_JSON(req, ok ? "{\"status\":\"ok\"}" : "{\"status\":\"err\"}");
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  POST /api/wifi/connect?idx=N                                      */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_wifi_connect(httpd_req_t *req)
+{
+    int idx = -1;
+    get_query_int(req, "idx", &idx);
+    if (idx < 0 && req->content_len > 0)
+    {
+        char body[128];
+        if (read_body(req, body, sizeof(body)) > 0)
+        {
+            cJSON *j = cJSON_Parse(body);
+            if (j)
+            {
+                cJSON *idxj = cJSON_GetObjectItem(j, "index");
+                if (!idxj)
+                    idxj = cJSON_GetObjectItem(j, "idx");
+                if (idxj)
+                    idx = (int)cJSON_GetNumberValue(idxj);
+                cJSON_Delete(j);
+            }
+        }
+    }
+    if (idx < 0)
+    {
+        RESP_ERR(req, "missing idx");
+        return ESP_OK;
+    }
+    bool ok = wt_wifi_connect_profile(idx);
+    RESP_JSON(req, ok ? "{\"status\":\"ok\"}" : "{\"status\":\"err\"}");
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  GET /api/settings                                                 */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_settings_get(httpd_req_t *req)
+{
+    wt_settings_t s = wt_settings_get();
+
+    /* brightness mapped 0-100 from intensity 0-255 */
+    int brt = (int)((s.intensity * 100) / 255);
+
+    char buf[1280];
+    snprintf(buf, sizeof(buf),
+             "{"
+             "\"color\":\"%s\","
+             "\"brightness\":%d,"
+             "\"anim_colon\":%s,"
+             "\"anim_scroll\":%s,"
+             "\"anim_pulse\":%s,"
+             "\"anim_transition\":%s,"
+             "\"reaction_effect\":\"%s\","
+             "\"display_mode\":\"%s\","
+             "\"display_value\":%d,"
+             "\"display_text\":\"%s\","
+             "\"time_format\":%d,"
+             "\"timezone\":\"%s\","
+             "\"ntp_server\":\"%s\","
+             "\"alarm1_time\":\"%s\","
+             "\"alarm1_en\":%s,"
+             "\"alarm2_time\":\"%s\","
+             "\"alarm2_en\":%s,"
+             "\"notif_type\":\"%s\","
+             "\"notif_sound\":\"%s\","
+             "\"sleep_mode\":\"%s\","
+             "\"sleep_timeout\":%d,"
+             "\"batt_alert_pct\":%d,"
+             "\"ps_dim\":%s,"
+             "\"ps_wifi\":%s"
+             "}",
+             s.color_hex[0] ? s.color_hex : "#00c8ff",
+             brt,
+             s.colon_blink ? "true" : "false",
+             s.anim_scroll ? "true" : "false",
+             s.anim_pulse ? "true" : "false",
+             s.anim_transition ? "true" : "false",
+             s.reaction_effect,
+             s.display_mode,
+             s.display_value,
+             s.display_text,
+             s.time_format,
+             s.timezone,
+             s.ntp_server,
+             s.alarm1_time,
+             s.alarm1_en ? "true" : "false",
+             s.alarm2_time,
+             s.alarm2_en ? "true" : "false",
+             s.notif_type,
+             s.notif_sound,
+             s.sleep_mode,
+             s.sleep_timeout_s,
+             s.batt_alert_pct,
+             s.ps_dim ? "true" : "false",
+             s.ps_wifi ? "true" : "false");
+    RESP_JSON(req, buf);
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  POST /api/settings                                                */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_settings_set(httpd_req_t *req)
+{
+    char body[1024];
+    if (read_body(req, body, sizeof(body)) < 0)
+    {
+        RESP_ERR(req, "read failed");
+        return ESP_OK;
+    }
+    cJSON *j = cJSON_Parse(body);
+    if (!j)
+    {
+        RESP_ERR(req, "json error");
+        return ESP_OK;
+    }
+
+    wt_settings_t s = wt_settings_get();
+
+    /* ── Display fields ── */
+    cJSON *color = cJSON_GetObjectItem(j, "color");
+    if (color && cJSON_IsString(color))
+    {
+        const char *hex = cJSON_GetStringValue(color);
+        strlcpy(s.color_hex, hex, sizeof(s.color_hex));
+        wt_settings_parse_hex_color(hex,
+                                    &s.color_on.red, &s.color_on.green, &s.color_on.blue);
+    }
+    cJSON *brt = cJSON_GetObjectItem(j, "brightness");
+    if (brt)
+    {
+        int pct = (int)cJSON_GetNumberValue(brt);
+        s.intensity = (uint8_t)((pct * 255) / 100);
+    }
+    cJSON *cb = cJSON_GetObjectItem(j, "anim_colon");
+    if (cb)
+        s.colon_blink = cJSON_IsTrue(cb);
+    cJSON *asc = cJSON_GetObjectItem(j, "anim_scroll");
+    if (asc)
+        s.anim_scroll = cJSON_IsTrue(asc);
+    cJSON *apu = cJSON_GetObjectItem(j, "anim_pulse");
+    if (apu)
+        s.anim_pulse = cJSON_IsTrue(apu);
+    cJSON *atr = cJSON_GetObjectItem(j, "anim_transition");
+    if (atr)
+        s.anim_transition = cJSON_IsTrue(atr);
+    cJSON *reff = cJSON_GetObjectItem(j, "reaction_effect");
+    if (reff && cJSON_IsString(reff))
+        strlcpy(s.reaction_effect, cJSON_GetStringValue(reff), sizeof(s.reaction_effect));
+    cJSON *dmode = cJSON_GetObjectItem(j, "display_mode");
+    if (dmode && cJSON_IsString(dmode))
+        strlcpy(s.display_mode, cJSON_GetStringValue(dmode), sizeof(s.display_mode));
+    cJSON *dvalue = cJSON_GetObjectItem(j, "display_value");
+    if (dvalue)
+        s.display_value = (int16_t)cJSON_GetNumberValue(dvalue);
+    cJSON *dtext = cJSON_GetObjectItem(j, "display_text");
+    if (dtext && cJSON_IsString(dtext))
+        sanitize_display_text(cJSON_GetStringValue(dtext), s.display_text, sizeof(s.display_text));
+
+    /* ── Clock fields ── */
+    cJSON *tf = cJSON_GetObjectItem(j, "time_format");
+    if (tf)
+        s.time_format = (uint8_t)cJSON_GetNumberValue(tf);
+    cJSON *tz = cJSON_GetObjectItem(j, "timezone");
+    if (tz && cJSON_IsString(tz))
+        strlcpy(s.timezone, cJSON_GetStringValue(tz), sizeof(s.timezone));
+    cJSON *ntp = cJSON_GetObjectItem(j, "ntp_server");
+    if (ntp && cJSON_IsString(ntp))
+        strlcpy(s.ntp_server, cJSON_GetStringValue(ntp), sizeof(s.ntp_server));
+    cJSON *al1t = cJSON_GetObjectItem(j, "alarm1_time");
+    if (al1t && cJSON_IsString(al1t))
+        strlcpy(s.alarm1_time, cJSON_GetStringValue(al1t), sizeof(s.alarm1_time));
+    cJSON *al1e = cJSON_GetObjectItem(j, "alarm1_en");
+    if (al1e)
+        s.alarm1_en = cJSON_IsTrue(al1e);
+    cJSON *al2t = cJSON_GetObjectItem(j, "alarm2_time");
+    if (al2t && cJSON_IsString(al2t))
+        strlcpy(s.alarm2_time, cJSON_GetStringValue(al2t), sizeof(s.alarm2_time));
+    cJSON *al2e = cJSON_GetObjectItem(j, "alarm2_en");
+    if (al2e)
+        s.alarm2_en = cJSON_IsTrue(al2e);
+    cJSON *ntt = cJSON_GetObjectItem(j, "notif_type");
+    if (ntt && cJSON_IsString(ntt))
+        strlcpy(s.notif_type, cJSON_GetStringValue(ntt), sizeof(s.notif_type));
+    cJSON *nts = cJSON_GetObjectItem(j, "notif_sound");
+    if (nts && cJSON_IsString(nts))
+        strlcpy(s.notif_sound, cJSON_GetStringValue(nts), sizeof(s.notif_sound));
+
+    /* ── Power fields ── */
+    cJSON *slm = cJSON_GetObjectItem(j, "sleep_mode");
+    if (slm && cJSON_IsString(slm))
+        strlcpy(s.sleep_mode, cJSON_GetStringValue(slm), sizeof(s.sleep_mode));
+    cJSON *slt = cJSON_GetObjectItem(j, "sleep_timeout");
+    if (slt)
+        s.sleep_timeout_s = (uint16_t)cJSON_GetNumberValue(slt);
+    cJSON *bat = cJSON_GetObjectItem(j, "batt_alert_pct");
+    if (bat)
+        s.batt_alert_pct = (uint8_t)cJSON_GetNumberValue(bat);
+    cJSON *psd = cJSON_GetObjectItem(j, "ps_dim");
+    if (psd)
+        s.ps_dim = cJSON_IsTrue(psd);
+    cJSON *psw = cJSON_GetObjectItem(j, "ps_wifi");
+    if (psw)
+        s.ps_wifi = cJSON_IsTrue(psw);
+
+    cJSON_Delete(j);
+
+    bool ok = wt_settings_set(&s);
+    if (ok)
+    {
+        wt_settings_t applied = wt_settings_get();
+        apply_display_settings_now(&applied);
+    }
+    RESP_JSON(req, ok ? "{\"status\":\"ok\"}" : "{\"status\":\"err\",\"error\":\"nvs write failed\"}");
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  GET /api/power                                                    */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_power_get(httpd_req_t *req)
+{
+    wt_settings_t s = wt_settings_get();
+    /* Battery reading — extend wt_app_hw.h for real ADC values */
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "{"
+             "\"battery_pct\":0,"
+             "\"voltage\":0.0,"
+             "\"current\":0,"
+             "\"source\":\"USB\","
+             "\"eta_hours\":0,"
+             "\"sleep_mode\":\"%s\","
+             "\"sleep_timeout\":%d,"
+             "\"batt_alert_pct\":%d,"
+             "\"ps_dim\":%s,"
+             "\"ps_wifi\":%s"
+             "}",
+             s.sleep_mode, s.sleep_timeout_s, s.batt_alert_pct,
+             s.ps_dim ? "true" : "false",
+             s.ps_wifi ? "true" : "false");
+    RESP_JSON(req, buf);
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  POST /api/ntp/sync                                                */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_ntp_sync(httpd_req_t *req)
+{
+    char body[256];
+    read_body(req, body, sizeof(body));
+    cJSON *j = cJSON_Parse(body);
+    if (j)
+    {
+        cJSON *srv = cJSON_GetObjectItem(j, "server");
+        if (srv && cJSON_IsString(srv))
+        {
+            wt_settings_t s = wt_settings_get();
+            strlcpy(s.ntp_server, cJSON_GetStringValue(srv),
+                    sizeof(s.ntp_server));
+            wt_settings_set(&s);
+        }
+        cJSON_Delete(j);
+    }
+    /* Trigger SNTP resync if available */
+    APPLOG_I("NTP sync requested");
+    RESP_JSON(req, "{\"status\":\"ok\"}");
+    return ESP_OK;
+}
+
 static esp_err_t ota_write_cb(void *ctx, const char *data, size_t len)
 {
     esp_ota_handle_t ota_handle = *(esp_ota_handle_t *)ctx;
@@ -615,25 +1248,26 @@ static esp_err_t handler_ota_firmware(httpd_req_t *req)
 }
 
 /* ------------------------------------------------------------------ */
-/*  POST /api/ota/webapp  — update SPIFFS index.html                  */
+/*  Shared SPIFFS file upload helper                                  */
+/*  Streams a multipart/form-data body into a fixed SPIFFS path.     */
 /* ------------------------------------------------------------------ */
 
-static esp_err_t handler_ota_webapp(httpd_req_t *req)
+static esp_err_t spiffs_file_upload(httpd_req_t *req, const char *spiffs_path,
+                                    const char *label)
 {
-    APPLOG_I("WebApp OTA: %d bytes incoming", req->content_len);
-
-    FILE *f = fopen(INDEX_HTML, "w");
-    if (!f)
-    {
-        RESP_ERR(req, "cannot open spiffs file");
-        return ESP_OK;
-    }
+    APPLOG_I("OTA %s: %d bytes incoming", label, req->content_len);
 
     upload_stream_t stream;
     if (!upload_stream_init(req, &stream))
     {
-        fclose(f);
         RESP_ERR(req, "invalid upload content-type");
+        return ESP_OK;
+    }
+
+    FILE *f = fopen(spiffs_path, "w");
+    if (!f)
+    {
+        RESP_ERR(req, "cannot open spiffs file");
         return ESP_OK;
     }
 
@@ -643,9 +1277,7 @@ static esp_err_t handler_ota_webapp(httpd_req_t *req)
 
     while (remaining > 0)
     {
-        int to_recv = (remaining < (int)sizeof(buf))
-                          ? remaining
-                          : (int)sizeof(buf);
+        int to_recv = remaining < (int)sizeof(buf) ? remaining : (int)sizeof(buf);
         int n = httpd_req_recv(req, buf, to_recv);
         if (n <= 0)
         {
@@ -669,14 +1301,47 @@ static esp_err_t handler_ota_webapp(httpd_req_t *req)
 
     if (ok)
     {
-        APPLOG_I("WebApp OTA complete");
+        APPLOG_I("OTA %s: done", label);
         RESP_JSON(req, "{\"ok\":true}");
     }
     else
     {
-        APPLOG_E("WebApp OTA write error");
+        APPLOG_E("OTA %s: write error", label);
         RESP_JSON(req, "{\"ok\":false,\"error\":\"write error\"}");
     }
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  POST /api/ota/index.html                                          */
+/*  POST /api/ota/style.css                                           */
+/*  POST /api/ota/app.js                                              */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_ota_index(httpd_req_t *req)
+{
+    return spiffs_file_upload(req, INDEX_HTML, "index.html");
+}
+
+static esp_err_t handler_ota_style(httpd_req_t *req)
+{
+    return spiffs_file_upload(req, STYLE_CSS, "style.css");
+}
+
+static esp_err_t handler_ota_appjs(httpd_req_t *req)
+{
+    return spiffs_file_upload(req, APP_JS, "app.js");
+}
+
+/* ------------------------------------------------------------------ */
+/*  POST /api/reboot                                                  */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t handler_reboot(httpd_req_t *req)
+{
+    RESP_JSON(req, "{\"ok\":true}");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
     return ESP_OK;
 }
 
@@ -684,8 +1349,6 @@ static esp_err_t handler_ota_webapp(httpd_req_t *req)
 /*  WebSocket handler  GET /ws                                        */
 /* ------------------------------------------------------------------ */
 
-/* Send a short text reply back to the client that issued the command.
-   Called from within the httpd task, so httpd_ws_send_frame (sync) is used. */
 static void ws_reply(httpd_req_t *req, const char *text)
 {
     httpd_ws_frame_t pkt = {
@@ -698,18 +1361,6 @@ static void ws_reply(httpd_req_t *req, const char *text)
     httpd_ws_send_frame(req, &pkt);
 }
 
-/* Dispatch an inbound JSON command frame from the browser.
- *
- *  Supported commands (sent as {"cmd":"<name>", ...args...}):
- *
- *  {"cmd":"settings",  <same keys as POST /api/settings>}
- *  {"cmd":"display",   <same keys as POST /api/settings display subset>}
- *  {"cmd":"ntp_sync",  "server":"pool.ntp.org"}
- *  {"cmd":"reboot"}
- *  {"cmd":"ping"}       → replies {"ack":"pong"}
- *
- *  All commands reply {"ack":"ok"} on success, {"ack":"err","msg":"..."} on failure.
- */
 static void ws_dispatch(httpd_req_t *req, const char *json_str)
 {
     cJSON *j = cJSON_Parse(json_str);
@@ -727,7 +1378,6 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
         return;
     }
 
-    /* ---- ping ---- */
     if (strcmp(cmd, "ping") == 0)
     {
         cJSON_Delete(j);
@@ -735,23 +1385,19 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
         return;
     }
 
-    /* ---- settings / display (identical path) ---- */
     if (strcmp(cmd, "settings") == 0 || strcmp(cmd, "display") == 0)
     {
         wt_settings_t s = wt_settings_get();
-
         cJSON *color = cJSON_GetObjectItem(j, "color");
         if (color && cJSON_IsString(color))
         {
             const char *hex = cJSON_GetStringValue(color);
             strlcpy(s.color_hex, hex, sizeof(s.color_hex));
-            wt_settings_parse_hex_color(hex,
-                                        &s.color_on.red, &s.color_on.green, &s.color_on.blue);
+            wt_settings_parse_hex_color(hex, &s.color_on.red, &s.color_on.green, &s.color_on.blue);
         }
         cJSON *brt = cJSON_GetObjectItem(j, "brightness");
         if (brt)
             s.intensity = (uint8_t)(((int)cJSON_GetNumberValue(brt) * 255) / 100);
-
         cJSON *cb = cJSON_GetObjectItem(j, "anim_colon");
         if (cb)
             s.colon_blink = cJSON_IsTrue(cb);
@@ -764,20 +1410,18 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
         cJSON *atr = cJSON_GetObjectItem(j, "anim_transition");
         if (atr)
             s.anim_transition = cJSON_IsTrue(atr);
-
         cJSON *reff = cJSON_GetObjectItem(j, "reaction_effect");
         if (reff && cJSON_IsString(reff))
             strlcpy(s.reaction_effect, cJSON_GetStringValue(reff), sizeof(s.reaction_effect));
-        cJSON *dmode = cJSON_GetObjectItem(j, "display_mode");
-        if (dmode && cJSON_IsString(dmode))
-            strlcpy(s.display_mode, cJSON_GetStringValue(dmode), sizeof(s.display_mode));
+        cJSON *dmod = cJSON_GetObjectItem(j, "display_mode");
+        if (dmod && cJSON_IsString(dmod))
+            strlcpy(s.display_mode, cJSON_GetStringValue(dmod), sizeof(s.display_mode));
         cJSON *dval = cJSON_GetObjectItem(j, "display_value");
         if (dval)
             s.display_value = (int16_t)cJSON_GetNumberValue(dval);
         cJSON *dtxt = cJSON_GetObjectItem(j, "display_text");
         if (dtxt && cJSON_IsString(dtxt))
             sanitize_display_text(cJSON_GetStringValue(dtxt), s.display_text, sizeof(s.display_text));
-
         cJSON *tf = cJSON_GetObjectItem(j, "time_format");
         if (tf)
             s.time_format = (uint8_t)cJSON_GetNumberValue(tf);
@@ -787,7 +1431,6 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
         cJSON *ntp = cJSON_GetObjectItem(j, "ntp_server");
         if (ntp && cJSON_IsString(ntp))
             strlcpy(s.ntp_server, cJSON_GetStringValue(ntp), sizeof(s.ntp_server));
-
         cJSON *al1t = cJSON_GetObjectItem(j, "alarm1_time");
         if (al1t && cJSON_IsString(al1t))
             strlcpy(s.alarm1_time, cJSON_GetStringValue(al1t), sizeof(s.alarm1_time));
@@ -800,14 +1443,12 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
         cJSON *al2e = cJSON_GetObjectItem(j, "alarm2_en");
         if (al2e)
             s.alarm2_en = cJSON_IsTrue(al2e);
-
         cJSON *ntt = cJSON_GetObjectItem(j, "notif_type");
         if (ntt && cJSON_IsString(ntt))
             strlcpy(s.notif_type, cJSON_GetStringValue(ntt), sizeof(s.notif_type));
         cJSON *nts = cJSON_GetObjectItem(j, "notif_sound");
         if (nts && cJSON_IsString(nts))
             strlcpy(s.notif_sound, cJSON_GetStringValue(nts), sizeof(s.notif_sound));
-
         cJSON *slm = cJSON_GetObjectItem(j, "sleep_mode");
         if (slm && cJSON_IsString(slm))
             strlcpy(s.sleep_mode, cJSON_GetStringValue(slm), sizeof(s.sleep_mode));
@@ -823,20 +1464,17 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
         cJSON *psw = cJSON_GetObjectItem(j, "ps_wifi");
         if (psw)
             s.ps_wifi = cJSON_IsTrue(psw);
-
         cJSON_Delete(j);
-
         bool ok = wt_settings_set(&s);
         if (ok)
         {
-            wt_settings_t applied = wt_settings_get();
-            apply_display_settings_now(&applied);
+            wt_settings_t a = wt_settings_get();
+            apply_display_settings_now(&a);
         }
         ws_reply(req, ok ? "{\"ack\":\"ok\"}" : "{\"ack\":\"err\",\"msg\":\"nvs write failed\"}");
         return;
     }
 
-    /* ---- ntp_sync ---- */
     if (strcmp(cmd, "ntp_sync") == 0)
     {
         cJSON *srv = cJSON_GetObjectItem(j, "server");
@@ -852,7 +1490,6 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
         return;
     }
 
-    /* ---- reboot ---- */
     if (strcmp(cmd, "reboot") == 0)
     {
         cJSON_Delete(j);
@@ -862,7 +1499,6 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
         return;
     }
 
-    /* ---- wifi_add ---- */
     if (strcmp(cmd, "wifi_add") == 0)
     {
         const char *ssid = cJSON_GetStringValue(cJSON_GetObjectItem(j, "ssid"));
@@ -870,32 +1506,27 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
         const char *passwd = passj ? cJSON_GetStringValue(passj) : "";
         bool ok = ssid && wt_wifi_add_profile(ssid, passwd ? passwd : "");
         cJSON_Delete(j);
-        ws_reply(req, ok ? "{\"ack\":\"ok\"}"
-                         : "{\"ack\":\"err\",\"msg\":\"full or invalid ssid\"}");
+        ws_reply(req, ok ? "{\"ack\":\"ok\"}" : "{\"ack\":\"err\",\"msg\":\"full or invalid ssid\"}");
         return;
     }
 
-    /* ---- wifi_del ---- */
     if (strcmp(cmd, "wifi_del") == 0)
     {
         cJSON *idxj = cJSON_GetObjectItem(j, "index");
         int idx = idxj ? (int)cJSON_GetNumberValue(idxj) : -1;
         cJSON_Delete(j);
         bool ok = (idx >= 0) && wt_wifi_remove_profile(idx);
-        ws_reply(req, ok ? "{\"ack\":\"ok\"}"
-                         : "{\"ack\":\"err\",\"msg\":\"invalid index\"}");
+        ws_reply(req, ok ? "{\"ack\":\"ok\"}" : "{\"ack\":\"err\",\"msg\":\"invalid index\"}");
         return;
     }
 
-    /* ---- wifi_connect ---- */
     if (strcmp(cmd, "wifi_connect") == 0)
     {
         cJSON *idxj = cJSON_GetObjectItem(j, "index");
         int idx = idxj ? (int)cJSON_GetNumberValue(idxj) : -1;
         cJSON_Delete(j);
         bool ok = (idx >= 0) && wt_wifi_connect_profile(idx);
-        ws_reply(req, ok ? "{\"ack\":\"ok\"}"
-                         : "{\"ack\":\"err\",\"msg\":\"invalid index\"}");
+        ws_reply(req, ok ? "{\"ack\":\"ok\"}" : "{\"ack\":\"err\",\"msg\":\"invalid index\"}");
         return;
     }
 
@@ -911,7 +1542,6 @@ static esp_err_t handler_ws(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* Two-pass receive: first call (max_len=0) obtains frame length */
     httpd_ws_frame_t pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.type = HTTPD_WS_TYPE_TEXT;
@@ -928,15 +1558,13 @@ static esp_err_t handler_ws(httpd_req_t *req)
         ws_client_remove(httpd_req_to_sockfd(req));
         return ESP_OK;
     }
-
     if (pkt.type != HTTPD_WS_TYPE_TEXT || pkt.len == 0)
         return ESP_OK;
 
-    /* Allocate exact-sized buffer and receive payload */
     uint8_t *buf = (uint8_t *)malloc(pkt.len + 1);
     if (!buf)
     {
-        APPLOG_E("WS rx: out of memory (%u bytes)", (unsigned)pkt.len);
+        APPLOG_E("WS rx: OOM");
         return ESP_ERR_NO_MEM;
     }
     pkt.payload = buf;
@@ -950,21 +1578,17 @@ static esp_err_t handler_ws(httpd_req_t *req)
     }
 
     buf[pkt.len] = '\0';
-    APPLOG_I("WS rx (%u B): %.*s", (unsigned)pkt.len,
-             (int)(pkt.len > 120 ? 120 : pkt.len), (char *)buf);
-
     ws_dispatch(req, (const char *)buf);
     free(buf);
     return ESP_OK;
 }
 
 /* ------------------------------------------------------------------ */
-/*  Build the combined JSON payload pushed over WebSocket             */
+/*  WebSocket push — build full-state and display-only frames         */
 /* ------------------------------------------------------------------ */
 
 static void build_ws_payload(char *buf, size_t buf_len, uint32_t *inout_log_seq)
 {
-    /* ---- System ---- */
     esp_chip_info_t chip;
     esp_chip_info(&chip);
     uint32_t flash_size = 0;
@@ -975,8 +1599,7 @@ static void build_ws_payload(char *buf, size_t buf_len, uint32_t *inout_log_seq)
     int64_t uptime_s = esp_timer_get_time() / 1000000;
 
     const esp_partition_t *running = esp_ota_get_running_partition();
-    const esp_partition_t *app1 = esp_partition_find_first(
-        ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, NULL);
+    const esp_partition_t *app1 = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, NULL);
     char ota_slot[8] = "app0";
     if (running && app1 && running->address == app1->address)
         strlcpy(ota_slot, "app1", sizeof(ota_slot));
@@ -986,7 +1609,6 @@ static void build_ws_payload(char *buf, size_t buf_len, uint32_t *inout_log_seq)
     int spiffs_pct = spiffs_total ? (int)(spiffs_used * 100 / spiffs_total) : 0;
 
     wt_wifi_status_t wst = wt_wifi_get_status();
-
     float temperature_c = NAN;
     bool has_temp = read_mcu_temperature_c(&temperature_c);
 
@@ -1011,17 +1633,15 @@ static void build_ws_payload(char *buf, size_t buf_len, uint32_t *inout_log_seq)
     default:
         break;
     }
-
     const char *chip_name =
         (chip.model == CHIP_ESP32) ? "ESP32" : (chip.model == CHIP_ESP32S2) ? "ESP32-S2"
                                            : (chip.model == CHIP_ESP32S3)   ? "ESP32-S3"
                                            : (chip.model == CHIP_ESP32C3)   ? "ESP32-C3"
                                                                             : "Unknown";
 
-    /* ---- Display state (build as JSON string) ---- */
-    char disp_json[2048];
+    /* ---- Display ---- */
+    static char disp_json[2048];
     strlcpy(disp_json, "null", sizeof(disp_json));
-
     wt_segd_snapshot_t snap;
     if (wt_segd_snapshot_get(&snap))
     {
@@ -1034,15 +1654,12 @@ static void build_ws_payload(char *buf, size_t buf_len, uint32_t *inout_log_seq)
         cJSON_AddBoolToObject(d, "colon", snap.colon_on);
         cJSON_AddBoolToObject(d, "colon_blink", snap.request.colon_blink);
         cJSON_AddNumberToObject(d, "time_format", snap.request.time_format);
-
         cJSON *digits = cJSON_AddArrayToObject(d, "digits");
         for (int i = 0; i < WT_SEGD_NUM_DIGITS; i++)
             cJSON_AddItemToArray(digits, cJSON_CreateNumber(snap.frame.digit[i]));
-
         cJSON_AddItemToObject(d, "color_on", color_to_json(snap.request.color_on));
         cJSON_AddItemToObject(d, "color_off", color_to_json(snap.request.color_off));
         cJSON_AddItemToObject(d, "colon_color", color_to_json(snap.colon_color));
-
         cJSON *dc = cJSON_AddArrayToObject(d, "digit_colors");
         for (int di = 0; di < WT_SEGD_NUM_DIGITS; di++)
         {
@@ -1051,7 +1668,6 @@ static void build_ws_payload(char *buf, size_t buf_len, uint32_t *inout_log_seq)
                 cJSON_AddItemToArray(sc, color_to_json(snap.digit_color[di][si]));
             cJSON_AddItemToArray(dc, sc);
         }
-
         char *ds = cJSON_PrintUnformatted(d);
         if (ds)
         {
@@ -1061,18 +1677,17 @@ static void build_ws_payload(char *buf, size_t buf_len, uint32_t *inout_log_seq)
         cJSON_Delete(d);
     }
 
-    /* ---- Incremental logs ---- */
+    /* ---- Logs (incremental) ---- */
     static char log_json[2048];
     uint32_t next_seq = 0;
     wt_log_read_json(*inout_log_seq, log_json, sizeof(log_json), &next_seq);
     *inout_log_seq = next_seq;
 
-    /* ---- WiFi (status + profiles) ---- */
-    char wifi_json[1024];
+    /* ---- WiFi ---- */
+    static char wifi_json[1024];
     {
         wt_wifi_profile_t prof[WT_WIFI_MAX_PROFILES];
         int cnt = wt_wifi_get_profiles(prof, WT_WIFI_MAX_PROFILES);
-
         cJSON *w = cJSON_CreateObject();
         cJSON_AddBoolToObject(w, "connected", wst.sta_connected);
         cJSON_AddStringToObject(w, "ssid", wst.sta_ssid);
@@ -1083,7 +1698,6 @@ static void build_ws_payload(char *buf, size_t buf_len, uint32_t *inout_log_seq)
         cJSON_AddBoolToObject(w, "ap_active", wst.ap_active);
         cJSON_AddStringToObject(w, "ap_ssid", wst.ap_ssid);
         cJSON_AddNumberToObject(w, "ap_clients", wst.ap_clients);
-
         cJSON *profiles = cJSON_AddArrayToObject(w, "profiles");
         for (int i = 0; i < cnt; i++)
         {
@@ -1093,7 +1707,6 @@ static void build_ws_payload(char *buf, size_t buf_len, uint32_t *inout_log_seq)
             cJSON_AddBoolToObject(p, "has_pass", strlen(prof[i].passwd) > 0);
             cJSON_AddItemToArray(profiles, p);
         }
-
         char *ws = cJSON_PrintUnformatted(w);
         if (ws)
         {
@@ -1108,152 +1721,177 @@ static void build_ws_payload(char *buf, size_t buf_len, uint32_t *inout_log_seq)
     }
 
     /* ---- Power ---- */
-    char power_json[256];
+    static char power_json[256];
     {
         wt_settings_t ps = wt_settings_get();
         snprintf(power_json, sizeof(power_json),
-                 "{"
-                 "\"battery_pct\":0,"
-                 "\"voltage\":0.0,"
-                 "\"current\":0,"
-                 "\"source\":\"USB\","
-                 "\"eta_hours\":0,"
-                 "\"sleep_mode\":\"%s\","
-                 "\"sleep_timeout\":%d,"
-                 "\"batt_alert_pct\":%d,"
-                 "\"ps_dim\":%s,"
-                 "\"ps_wifi\":%s"
-                 "}",
+                 "{\"battery_pct\":0,\"voltage\":0.0,\"current\":0,\"source\":\"USB\","
+                 "\"eta_hours\":0,\"sleep_mode\":\"%s\",\"sleep_timeout\":%d,"
+                 "\"batt_alert_pct\":%d,\"ps_dim\":%s,\"ps_wifi\":%s}",
                  ps.sleep_mode, ps.sleep_timeout_s, ps.batt_alert_pct,
-                 ps.ps_dim ? "true" : "false",
-                 ps.ps_wifi ? "true" : "false");
+                 ps.ps_dim ? "true" : "false", ps.ps_wifi ? "true" : "false");
     }
 
     /* ---- Settings ---- */
-    char settings_json[1280];
+    static char settings_json[1280];
     {
         wt_settings_t ss = wt_settings_get();
         int brt = (int)((ss.intensity * 100) / 255);
         snprintf(settings_json, sizeof(settings_json),
-                 "{"
-                 "\"color\":\"%s\","
-                 "\"brightness\":%d,"
-                 "\"anim_colon\":%s,"
-                 "\"anim_scroll\":%s,"
-                 "\"anim_pulse\":%s,"
-                 "\"anim_transition\":%s,"
-                 "\"reaction_effect\":\"%s\","
-                 "\"display_mode\":\"%s\","
-                 "\"display_value\":%d,"
-                 "\"display_text\":\"%s\","
-                 "\"time_format\":%d,"
-                 "\"timezone\":\"%s\","
-                 "\"ntp_server\":\"%s\","
-                 "\"alarm1_time\":\"%s\","
-                 "\"alarm1_en\":%s,"
-                 "\"alarm2_time\":\"%s\","
-                 "\"alarm2_en\":%s,"
-                 "\"notif_type\":\"%s\","
-                 "\"notif_sound\":\"%s\","
-                 "\"sleep_mode\":\"%s\","
-                 "\"sleep_timeout\":%d,"
-                 "\"batt_alert_pct\":%d,"
-                 "\"ps_dim\":%s,"
-                 "\"ps_wifi\":%s"
-                 "}",
-                 ss.color_hex[0] ? ss.color_hex : "#00c8ff",
-                 brt,
-                 ss.colon_blink ? "true" : "false",
-                 ss.anim_scroll ? "true" : "false",
-                 ss.anim_pulse ? "true" : "false",
-                 ss.anim_transition ? "true" : "false",
-                 ss.reaction_effect,
-                 ss.display_mode,
-                 ss.display_value,
-                 ss.display_text,
-                 ss.time_format,
-                 ss.timezone,
-                 ss.ntp_server,
-                 ss.alarm1_time,
-                 ss.alarm1_en ? "true" : "false",
-                 ss.alarm2_time,
-                 ss.alarm2_en ? "true" : "false",
-                 ss.notif_type,
-                 ss.notif_sound,
-                 ss.sleep_mode,
-                 ss.sleep_timeout_s,
-                 ss.batt_alert_pct,
-                 ss.ps_dim ? "true" : "false",
-                 ss.ps_wifi ? "true" : "false");
+                 "{\"color\":\"%s\",\"brightness\":%d,"
+                 "\"anim_colon\":%s,\"anim_scroll\":%s,\"anim_pulse\":%s,\"anim_transition\":%s,"
+                 "\"reaction_effect\":\"%s\",\"display_mode\":\"%s\","
+                 "\"display_value\":%d,\"display_text\":\"%s\","
+                 "\"time_format\":%d,\"timezone\":\"%s\",\"ntp_server\":\"%s\","
+                 "\"alarm1_time\":\"%s\",\"alarm1_en\":%s,"
+                 "\"alarm2_time\":\"%s\",\"alarm2_en\":%s,"
+                 "\"notif_type\":\"%s\",\"notif_sound\":\"%s\","
+                 "\"sleep_mode\":\"%s\",\"sleep_timeout\":%d,"
+                 "\"batt_alert_pct\":%d,\"ps_dim\":%s,\"ps_wifi\":%s}",
+                 ss.color_hex[0] ? ss.color_hex : "#00c8ff", brt,
+                 ss.colon_blink ? "true" : "false", ss.anim_scroll ? "true" : "false",
+                 ss.anim_pulse ? "true" : "false", ss.anim_transition ? "true" : "false",
+                 ss.reaction_effect, ss.display_mode, ss.display_value, ss.display_text,
+                 ss.time_format, ss.timezone, ss.ntp_server,
+                 ss.alarm1_time, ss.alarm1_en ? "true" : "false",
+                 ss.alarm2_time, ss.alarm2_en ? "true" : "false",
+                 ss.notif_type, ss.notif_sound, ss.sleep_mode,
+                 ss.sleep_timeout_s, ss.batt_alert_pct,
+                 ss.ps_dim ? "true" : "false", ss.ps_wifi ? "true" : "false");
     }
 
-    /* ---- Assemble the combined payload ---- */
     snprintf(buf, buf_len,
-             "{"
-             "\"type\":\"full\","
-             "\"chip_model\":\"%s\","
-             "\"cpu_cores\":%d,"
-             "\"cpu_freq_mhz\":240,"
-             "\"cpu_usage\":0,"
-             "\"flash_size\":%u,"
-             "\"flash_used_pct\":0,"
-             "\"free_heap\":%lu,"
-             "\"total_heap\":%lu,"
-             "\"min_free_heap\":%lu,"
-             "\"spiffs_used_pct\":%d,"
-             "\"uptime_s\":%lld,"
-             "\"app_version\":\"%s\","
-             "\"build_date\":\"%s %s\","
-             "\"idf_version\":\"%s\","
-             "\"ota_slot\":\"%s\","
-             "\"app0_state\":\"valid\","
-             "\"app1_state\":\"empty\","
-             "\"temperature\":%.1f,"
-             "\"reset_reason\":\"%s\","
-             "\"sta_connected\":%s,"
-             "\"sta_ssid\":\"%s\","
-             "\"sta_ip\":\"%s\","
-             "\"rssi\":%d,"
-             "\"ap_ip\":\"%s\","
-             "\"display\":%s,"
-             "\"wifi\":%s,"
-             "\"power\":%s,"
-             "\"settings\":%s,"
-             "\"logs\":%s"
-             "}",
-             chip_name,
-             chip.cores,
-             (unsigned)flash_size,
+             "{\"type\":\"full\","
+             "\"chip_model\":\"%s\",\"cpu_cores\":%d,\"cpu_freq_mhz\":240,\"cpu_usage\":0,"
+             "\"flash_size\":%u,\"flash_used_pct\":0,"
+             "\"free_heap\":%lu,\"total_heap\":%lu,\"min_free_heap\":%lu,"
+             "\"spiffs_used_pct\":%d,\"uptime_s\":%lld,"
+             "\"app_version\":\"1.0.0\",\"build_date\":\"%s %s\","
+             "\"idf_version\":\"%s\",\"ota_slot\":\"%s\","
+             "\"app0_state\":\"valid\",\"app1_state\":\"empty\","
+             "\"temperature\":%.1f,\"reset_reason\":\"%s\","
+             "\"sta_connected\":%s,\"sta_ssid\":\"%s\","
+             "\"sta_ip\":\"%s\",\"rssi\":%d,\"ap_ip\":\"%s\","
+             "\"display\":%s,\"wifi\":%s,\"power\":%s,\"settings\":%s,\"logs\":%s}",
+             chip_name, chip.cores, (unsigned)flash_size,
              free_heap, total_heap, min_heap,
-             spiffs_pct,
-             (long long)uptime_s,
-             "1.0.0",
-             __DATE__, __TIME__,
-             esp_get_idf_version(),
-             ota_slot,
-             has_temp ? temperature_c : 0.0f,
-             reset_reason,
-             wst.sta_connected ? "true" : "false",
-             wst.sta_ssid,
-             wst.sta_ip,
-             wst.sta_rssi,
-             wst.ap_ip,
-             disp_json,
-             wifi_json,
-             power_json,
-             settings_json,
-             log_json);
+             spiffs_pct, (long long)uptime_s,
+             __DATE__, __TIME__, esp_get_idf_version(), ota_slot,
+             has_temp ? temperature_c : 0.0f, reset_reason,
+             wst.sta_connected ? "true" : "false", wst.sta_ssid,
+             wst.sta_ip, wst.sta_rssi, wst.ap_ip,
+             disp_json, wifi_json, power_json, settings_json, log_json);
 }
 
-/* ------------------------------------------------------------------ */
-/*  WebSocket broadcast task  — pushes state to all clients           */
-/* ------------------------------------------------------------------ */
+static bool append_jsonf(char *buf, size_t buf_len, size_t *offset, const char *fmt, ...)
+{
+    if (!buf || !offset || *offset >= buf_len)
+    {
+        return false;
+    }
 
-/* ------------------------------------------------------------------ */
-/*  Build a lightweight display-only push frame                       */
-/*  Sent at WS_DISPLAY_INTERVAL_MS (50 ms = 20 fps).                 */
-/*  Format: {"type":"disp","display":{...full display snapshot...}}   */
-/* ------------------------------------------------------------------ */
+    va_list args;
+    va_start(args, fmt);
+    int written = vsnprintf(buf + *offset, buf_len - *offset, fmt, args);
+    va_end(args);
+
+    if (written < 0 || (size_t)written >= (buf_len - *offset))
+    {
+        if (buf_len > 0)
+        {
+            buf[buf_len - 1] = '\0';
+        }
+        return false;
+    }
+
+    *offset += (size_t)written;
+    return true;
+}
+
+static void format_display_json(char *buf, size_t buf_len, const wt_segd_snapshot_t *snap, bool with_type)
+{
+    if (!buf || buf_len == 0)
+    {
+        return;
+    }
+
+    if (!snap)
+    {
+        snprintf(buf, buf_len,
+                 with_type ? "{\"type\":\"disp\",\"display\":null}" : "null");
+        return;
+    }
+
+    int brightness = (snap->request.intensity * 100) / 255;
+    size_t offset = 0;
+
+    if (!append_jsonf(buf, buf_len, &offset,
+                      with_type ? "{\"type\":\"disp\",\"display\":{" : "{"))
+    {
+        goto overflow;
+    }
+
+    if (!append_jsonf(buf, buf_len, &offset,
+                      "\"available\":true,"
+                      "\"mode\":\"%s\","
+                      "\"anim\":\"%s\","
+                      "\"brightness\":%d,"
+                      "\"colon\":%s,"
+                      "\"colon_blink\":%s,"
+                      "\"time_format\":%u,"
+                      "\"digits\":[%u,%u,%u,%u],"
+                      "\"color_on\":[%u,%u,%u],"
+                      "\"color_off\":[%u,%u,%u],"
+                      "\"colon_color\":[%u,%u,%u],"
+                      "\"digit_colors\":[",
+                      mode_to_string(snap->request.mode),
+                      anim_to_string(snap->request.anim),
+                      brightness,
+                      snap->colon_on ? "true" : "false",
+                      snap->request.colon_blink ? "true" : "false",
+                      snap->request.time_format,
+                      snap->frame.digit[0], snap->frame.digit[1],
+                      snap->frame.digit[2], snap->frame.digit[3],
+                      snap->request.color_on.red, snap->request.color_on.green, snap->request.color_on.blue,
+                      snap->request.color_off.red, snap->request.color_off.green, snap->request.color_off.blue,
+                      snap->colon_color.red, snap->colon_color.green, snap->colon_color.blue))
+    {
+        goto overflow;
+    }
+
+    for (int di = 0; di < WT_SEGD_NUM_DIGITS; ++di)
+    {
+        if (!append_jsonf(buf, buf_len, &offset, di == 0 ? "[" : ",["))
+        {
+            goto overflow;
+        }
+
+        for (int si = 0; si < WT_SEGD_SEGS_PER_DIGIT; ++si)
+        {
+            wt_segd_color_t color = snap->digit_color[di][si];
+            if (!append_jsonf(buf, buf_len, &offset,
+                              si == 0 ? "[%u,%u,%u]" : ",[%u,%u,%u]",
+                              color.red, color.green, color.blue))
+            {
+                goto overflow;
+            }
+        }
+
+        if (!append_jsonf(buf, buf_len, &offset, "]"))
+        {
+            goto overflow;
+        }
+    }
+
+    if (!append_jsonf(buf, buf_len, &offset, with_type ? "]}}" : "]}"))
+    {
+        goto overflow;
+    }
+    return;
+
+overflow:
+    snprintf(buf, buf_len, with_type ? "{\"type\":\"disp\",\"display\":null}" : "null");
+}
 
 static void build_display_frame(char *buf, size_t buf_len)
 {
@@ -1263,54 +1901,9 @@ static void build_display_frame(char *buf, size_t buf_len)
         snprintf(buf, buf_len, "{\"type\":\"disp\",\"display\":null}");
         return;
     }
-
-    int brightness = (snap.request.intensity * 100) / 255;
-
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "type", "disp");
-
-    cJSON *d = cJSON_CreateObject();
-    cJSON_AddBoolToObject(d, "available", true);
-    cJSON_AddStringToObject(d, "mode", mode_to_string(snap.request.mode));
-    cJSON_AddStringToObject(d, "anim", anim_to_string(snap.request.anim));
-    cJSON_AddNumberToObject(d, "brightness", brightness);
-    cJSON_AddBoolToObject(d, "colon", snap.colon_on);
-    cJSON_AddBoolToObject(d, "colon_blink", snap.request.colon_blink);
-    cJSON_AddNumberToObject(d, "time_format", snap.request.time_format);
-
-    cJSON *digits = cJSON_AddArrayToObject(d, "digits");
-    for (int i = 0; i < WT_SEGD_NUM_DIGITS; i++)
-        cJSON_AddItemToArray(digits, cJSON_CreateNumber(snap.frame.digit[i]));
-
-    cJSON_AddItemToObject(d, "color_on", color_to_json(snap.request.color_on));
-    cJSON_AddItemToObject(d, "color_off", color_to_json(snap.request.color_off));
-    cJSON_AddItemToObject(d, "colon_color", color_to_json(snap.colon_color));
-
-    cJSON *dc = cJSON_AddArrayToObject(d, "digit_colors");
-    for (int di = 0; di < WT_SEGD_NUM_DIGITS; di++)
-    {
-        cJSON *sc = cJSON_CreateArray();
-        for (int si = 0; si < WT_SEGD_SEGS_PER_DIGIT; si++)
-            cJSON_AddItemToArray(sc, color_to_json(snap.digit_color[di][si]));
-        cJSON_AddItemToArray(dc, sc);
-    }
-
-    cJSON_AddItemToObject(root, "display", d);
-
-    char *s = cJSON_PrintUnformatted(root);
-    if (s)
-    {
-        strlcpy(buf, s, buf_len);
-        free(s);
-    }
-    else
-    {
-        snprintf(buf, buf_len, "{\"type\":\"disp\",\"display\":null}");
-    }
-    cJSON_Delete(root);
+    format_display_json(buf, buf_len, &snap, true);
 }
 
-/* Send one text frame to every live client; tombstone dead fds. */
 static void ws_broadcast_frame(const char *payload)
 {
     httpd_ws_frame_t pkt = {
@@ -1329,12 +1922,164 @@ static void ws_broadcast_frame(const char *payload)
         esp_err_t err = httpd_ws_send_frame_async(s_http_server, s_ws_fds[i], &pkt);
         if (err != ESP_OK)
         {
-            APPLOG_W("WS send failed fd=%d (%s) — removing",
-                     s_ws_fds[i], esp_err_to_name(err));
+            APPLOG_W("WS send failed fd=%d (%s) — removing", s_ws_fds[i], esp_err_to_name(err));
             s_ws_fds[i] = -1;
         }
     }
     xSemaphoreGive(s_ws_mutex);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Captive-portal — DNS hijack + OS probe HTTP handlers              */
+/*                                                                     */
+/*  When a device connects to the ESP32 AP, its OS sends a known HTTP */
+/*  probe to check for internet access.  We intercept every DNS query */
+/*  (UDP/53) and return 192.168.4.1, then serve OS-specific responses */
+/*  on those probe URLs so the device shows the "Sign in" notification.*/
+/* ------------------------------------------------------------------ */
+
+#define CAPTIVE_AP_IP "192.168.4.1"
+#define CAPTIVE_DNS_PORT 53
+#define CAPTIVE_DNS_BUF_SIZE 512
+
+/* Stateless DNS query handler — mutates buf in-place, sends reply.
+   Called from wt_task_web after recvfrom() returns ≥12 bytes.       */
+static void dns_handle_query(uint8_t *buf, int len, int sock,
+                             struct sockaddr_in *client, socklen_t clen)
+{
+    if (len < 12)
+        return;
+
+    /* Only handle standard queries (QR=0, Opcode=0) */
+    if ((buf[2] & 0xFA) != 0x00)
+        return;
+
+    /* Patch DNS header in-place */
+    uint8_t rd = buf[2] & 0x01; /* preserve Recursion Desired bit */
+    buf[2] = 0x84 | rd;         /* QR=1 (response), AA=1 (authoritative) */
+    buf[3] = 0x80;              /* RA=1, RCODE=0 (no error)              */
+    buf[6] = buf[4];            /* ANCOUNT = QDCOUNT                     */
+    buf[7] = buf[5];
+    buf[8] = buf[9] = buf[10] = buf[11] = 0; /* NSCOUNT / ARCOUNT = 0      */
+
+    /* Walk the question section to find its end */
+    int pos = 12;
+    while (pos < len && buf[pos] != 0x00)
+    {
+        if ((buf[pos] & 0xC0) == 0xC0)
+        {
+            pos += 2;
+            goto past_name;
+        }
+        pos += buf[pos] + 1;
+    }
+    if (pos < len && buf[pos] == 0x00)
+        pos++; /* consume null label */
+past_name:
+
+    if (pos + 4 > len)
+    {
+        sendto(sock, buf, len, 0, (struct sockaddr *)client, clen);
+        return;
+    }
+
+    uint16_t qtype = ((uint16_t)buf[pos] << 8) | buf[pos + 1];
+    pos += 4; /* skip QTYPE + QCLASS */
+
+    /* Append A-record answer for type A (1) or ANY (255) */
+    if ((qtype == 1 || qtype == 255) && pos + 16 <= CAPTIVE_DNS_BUF_SIZE)
+    {
+        buf[pos++] = 0xC0;
+        buf[pos++] = 0x0C; /* name ptr → question  */
+        buf[pos++] = 0x00;
+        buf[pos++] = 0x01; /* type A               */
+        buf[pos++] = 0x00;
+        buf[pos++] = 0x01; /* class IN             */
+        buf[pos++] = 0x00;
+        buf[pos++] = 0x00;
+        buf[pos++] = 0x00;
+        buf[pos++] = 0x0A; /* TTL 10 s             */
+        buf[pos++] = 0x00;
+        buf[pos++] = 0x04; /* RDLENGTH 4           */
+        buf[pos++] = 192;
+        buf[pos++] = 168;
+        buf[pos++] = 4;
+        buf[pos++] = 1; /* 192.168.4.1          */
+    }
+
+    sendto(sock, buf, pos, 0, (struct sockaddr *)client, clen);
+}
+
+/* iOS / macOS — probe: GET /hotspot-detect.html
+   Must NOT return 200+"Success" (that means "has internet").
+   A 302 triggers the CNA (Captive Network Assistant) sheet.         */
+static esp_err_t handler_captive_apple(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "http://" CAPTIVE_AP_IP "/");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr(req,
+                       "<html><body>"
+                       "<a href=\"http://" CAPTIVE_AP_IP "/\">Sign in to network</a>"
+                       "</body></html>");
+    return ESP_OK;
+}
+
+/* Android / Chrome — probe: GET /generate_204
+   Expects 204 for "no portal"; non-204 triggers portal notification. */
+static esp_err_t handler_captive_android(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "http://" CAPTIVE_AP_IP "/");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_sendstr(req, "");
+    return ESP_OK;
+}
+
+/* Windows NCSI — probe: GET /ncsi.txt
+   Content must be exactly "Microsoft NCSI".                         */
+static esp_err_t handler_captive_win_ncsi(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_sendstr(req, "Microsoft NCSI");
+    return ESP_OK;
+}
+
+/* Windows connect test — probe: GET /connecttest.txt               */
+static esp_err_t handler_captive_win_connect(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_sendstr(req, "Microsoft Connect Test");
+    return ESP_OK;
+}
+
+/* Firefox — probe: GET /canonical.html                             */
+static esp_err_t handler_captive_firefox(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_sendstr(req,
+                       "<html><head>"
+                       "<meta http-equiv=\"refresh\" content=\"0;url=http://" CAPTIVE_AP_IP "/\">"
+                       "</head><body>Redirecting...</body></html>");
+    return ESP_OK;
+}
+
+/* Generic redirect — /redirect and /success.txt                    */
+static esp_err_t handler_captive_redirect(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "http://" CAPTIVE_AP_IP "/");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr(req,
+                       "<html><body>"
+                       "<a href=\"http://" CAPTIVE_AP_IP "/\">Open portal</a>"
+                       "</body></html>");
+    return ESP_OK;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1345,7 +2090,7 @@ static void start_server(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.uri_match_fn = httpd_uri_match_wildcard;
-    cfg.max_uri_handlers = 6; /* /, /style.css, /app.js, OTA x2, /ws */
+    cfg.max_uri_handlers = 17; /* 3 assets + 4 OTA + 9 captive probes + 1 WS */
     cfg.stack_size = 16384;
     cfg.recv_wait_timeout = 10;
     cfg.send_wait_timeout = 10;
@@ -1366,18 +2111,31 @@ static void start_server(void)
         httpd_register_uri_handler(server, &_u);                      \
     } while (0)
 
-    /* Static assets — needed for initial page load */
+    /* ── Static assets — needed for initial page load only ── */
     REG(HTTP_GET, "/", handler_root);
     REG(HTTP_GET, "/style.css", handler_style_css);
     REG(HTTP_GET, "/app.js", handler_app_js);
 
-    /* Binary multipart uploads cannot go over WebSocket */
+    /* ── OTA uploads — binary multipart, cannot go over WebSocket ── */
     REG(HTTP_POST, "/api/ota/firmware", handler_ota_firmware);
-    REG(HTTP_POST, "/api/ota/webapp", handler_ota_webapp);
+    REG(HTTP_POST, "/api/ota/index.html", handler_ota_index);
+    REG(HTTP_POST, "/api/ota/style.css", handler_ota_style);
+    REG(HTTP_POST, "/api/ota/app.js", handler_ota_appjs);
+
+    /* ── Captive-portal OS probe handlers ── */
+    REG(HTTP_GET, "/hotspot-detect.html", handler_captive_apple);
+    REG(HTTP_GET, "/library/test/success.html", handler_captive_apple);
+    REG(HTTP_GET, "/generate_204", handler_captive_android);
+    REG(HTTP_GET, "/gen_204", handler_captive_android);
+    REG(HTTP_GET, "/ncsi.txt", handler_captive_win_ncsi);
+    REG(HTTP_GET, "/connecttest.txt", handler_captive_win_connect);
+    REG(HTTP_GET, "/redirect", handler_captive_redirect);
+    REG(HTTP_GET, "/canonical.html", handler_captive_firefox);
+    REG(HTTP_GET, "/success.txt", handler_captive_redirect);
 
 #undef REG
 
-    /* WebSocket — all live data + commands travel here */
+    /* ── WebSocket — ALL live data and commands go through here ── */
     {
         httpd_uri_t ws_uri = {
             .uri = "/ws",
@@ -1389,8 +2147,7 @@ static void start_server(void)
         httpd_register_uri_handler(server, &ws_uri);
     }
 
-    APPLOG_I("HTTP server started — static: /, /style.css, /app.js  "
-             "OTA: /api/ota/firmware, /api/ota/webapp  WS: /ws");
+    APPLOG_I("HTTP server started: 3 assets, 2 OTA, 9 captive, 1 WS");
 }
 
 /* ------------------------------------------------------------------ */
@@ -1401,13 +2158,11 @@ void wt_task_web(void *pvParameters)
 {
     // APPLOG_I("---------- WEB TASK STARTED ----------");
 
-    /* Initialise WebSocket state before the server starts */
+    /* Initialise WebSocket client table and mutex */
     ws_clients_init();
     s_ws_mutex = xSemaphoreCreateMutex();
     if (!s_ws_mutex)
-    {
         APPLOG_E("Failed to create WS mutex");
-    }
 
     /* Wait for WiFi AP to come up */
     vTaskDelay(pdMS_TO_TICKS(3000));
@@ -1415,16 +2170,76 @@ void wt_task_web(void *pvParameters)
     mount_spiffs();
     start_server();
 
+    /* ── Captive-portal DNS socket ──
+       SO_RCVTIMEO = WS_DISPLAY_INTERVAL_MS paces the main loop:
+         - a DNS packet arrives → recvfrom returns early → handle query
+         - no packet in 50 ms  → recvfrom returns EAGAIN → do WS work  */
+    int dns_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (dns_sock >= 0)
+    {
+        int reuse = 1;
+        setsockopt(dns_sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+        struct timeval tv_dns = {
+            .tv_sec = 0,
+            .tv_usec = WS_DISPLAY_INTERVAL_MS * 1000,
+        };
+        setsockopt(dns_sock, SOL_SOCKET, SO_RCVTIMEO, &tv_dns, sizeof(tv_dns));
+
+        struct sockaddr_in srv = {
+            .sin_family = AF_INET,
+            .sin_port = htons(CAPTIVE_DNS_PORT),
+            .sin_addr.s_addr = htonl(INADDR_ANY),
+        };
+        if (bind(dns_sock, (struct sockaddr *)&srv, sizeof(srv)) < 0)
+        {
+            APPLOG_E("Captive DNS: bind() failed");
+            close(dns_sock);
+            dns_sock = -1;
+        }
+        else
+        {
+            APPLOG_I("Captive portal DNS running (UDP/53 → %s)", CAPTIVE_AP_IP);
+        }
+    }
+    else
+    {
+        APPLOG_E("Captive DNS: socket() failed");
+    }
+
+    /* ── WS broadcast + DNS main loop ── */
     static char disp_payload[WS_DISPLAY_PAYLOAD];
     static char full_payload[WS_PAYLOAD_SIZE];
+    static uint8_t dns_buf[CAPTIVE_DNS_BUF_SIZE];
     uint32_t log_seq = 0;
     uint32_t tick_cnt = 0;
+    int64_t last_ws_us = esp_timer_get_time();
 
     for (;;)
     {
-        vTaskDelay(pdMS_TO_TICKS(WS_DISPLAY_INTERVAL_MS));
+        /* 1. DNS receive — blocks at most WS_DISPLAY_INTERVAL_MS */
+        if (dns_sock >= 0)
+        {
+            struct sockaddr_in client;
+            socklen_t clen = sizeof(client);
+            int len = recvfrom(dns_sock, dns_buf, sizeof(dns_buf) - 1, 0,
+                               (struct sockaddr *)&client, &clen);
+            if (len >= 12)
+                dns_handle_query(dns_buf, len, dns_sock, &client, clen);
+        }
+        else
+        {
+            vTaskDelay(pdMS_TO_TICKS(WS_DISPLAY_INTERVAL_MS));
+        }
 
-        /* Quick check: any clients connected? */
+        /* 2. WS broadcast — fire once per WS_DISPLAY_INTERVAL_MS */
+        int64_t now_us = esp_timer_get_time();
+        if ((now_us - last_ws_us) < (int64_t)(WS_DISPLAY_INTERVAL_MS * 1000LL))
+            continue;
+
+        last_ws_us = now_us;
+
+        /* Any WS clients connected? */
         bool any = false;
         if (s_ws_mutex && xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(10)) == pdTRUE)
         {
@@ -1438,30 +2253,23 @@ void wt_task_web(void *pvParameters)
         }
         if (!any)
         {
-            tick_cnt = 0; /* reset so next connect gets a full frame quickly */
+            tick_cnt = 0; /* reset so next connect gets a full frame immediately */
             continue;
         }
 
         tick_cnt++;
-
         if (tick_cnt >= WS_FULL_TICKS)
         {
-            /* Full-state frame — system, display, wifi, power, settings, logs */
+            /* Full-state frame: system, display, wifi, power, settings, logs */
             tick_cnt = 0;
             build_ws_payload(full_payload, sizeof(full_payload), &log_seq);
             ws_broadcast_frame(full_payload);
         }
         else
         {
-            /* Display-only frame — cheap snapshot, no system/wifi/settings work */
+            /* Display-only frame: cheap snapshot, no system/wifi/settings work */
             build_display_frame(disp_payload, sizeof(disp_payload));
             ws_broadcast_frame(disp_payload);
         }
-    }
-
-    /* Task keeps running — httpd uses its own internal task */
-    while (1)
-    {
-        vTaskDelay(pdMS_TO_TICKS(30000));
     }
 }

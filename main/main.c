@@ -29,6 +29,7 @@
 #include "wt_seg_display.h"
 
 #define GPIO_OUTPUT_PIN 11
+#define WT_MAIN_POLL_MS 1000
 
 /* ------------------------------------------------------------------ */
 /*  Main display task                                                    */
@@ -94,7 +95,7 @@ void wt_task_main(void *pvParameters)
             has_last_req = true;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(200));
+        vTaskDelay(pdMS_TO_TICKS(WT_MAIN_POLL_MS));
     }
 }
 

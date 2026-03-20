@@ -32,6 +32,8 @@ const S = {
   wsRetryMs: 3000,
 };
 const _db = {};
+let renderQueued = false;
+let renderDirty = true;
 function debounce(key, fn, ms) {
   clearTimeout(_db[key]);
   _db[key] = setTimeout(fn, ms || 500);
@@ -292,18 +294,20 @@ function resizeCanvas(cid) {
 function resizeAll() {
   resizeCanvas("vd-canvas");
   resizeCanvas("prev-canvas");
+  requestRender();
 }
 
-/* Canvas is redrawn every animation frame (~60 fps) — decoupled from
-   WS data arrival. Data ticks at 20 fps (display) / 1 fps (full state);
-   the rAF loop just paints whatever is currently in S.display. */
-function startRenderLoop() {
-  function frame() {
+function requestRender() {
+  renderDirty = true;
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(function () {
+    renderQueued = false;
+    if (!renderDirty) return;
+    renderDirty = false;
     renderDisplay("vd-canvas");
     renderDisplay("prev-canvas");
-    requestAnimationFrame(frame);
-  }
-  requestAnimationFrame(frame);
+  });
 }
 
 /* ═════ PAGE / SECTION NAV ════════════════ */
@@ -690,14 +694,19 @@ function uploadFW(file) {
 }
 function uploadWA(file) {
   if (!file) return;
+  var allowed = ["index.html", "style.css", "app.js"];
+  if (allowed.indexOf(file.name) === -1) {
+    toast("Must be index.html, style.css or app.js", "warn");
+    return;
+  }
   doUpload(
     file,
-    "/api/ota/webapp",
+    "/api/ota/" + file.name,
     "wa-prog",
     "wa-fill",
     "wa-pct",
     function () {
-      toast("Web app updated!", "ok");
+      toast(file.name + " updated!", "ok");
     },
     function () {
       toast("Upload failed", "err");
@@ -800,8 +809,9 @@ function handleWsMessage(d) {
       }
       setText("live-time", displayText(d.display));
       updateDispInfo();
+      requestRender();
     }
-    return;   /* rAF loop will paint on its own schedule */
+    return;
   }
   /* ── Full-state frame (type:"full", 1 fps) — fall through ─────── */
   if (d.uptime_s != null) {
@@ -861,7 +871,7 @@ function handleWsMessage(d) {
     }
     setText("live-time", displayText(d.display));
     updateDispInfo();
-    /* rAF loop repaints the canvas — no manual renderDisplay calls needed */
+    requestRender();
   }
 
   /* ── WiFi status + profiles ── */
@@ -1036,7 +1046,7 @@ function init() {
   });
   initNavState();
   resizeAll();
-  startRenderLoop();
+  requestRender();
   initWebSocket();
   S.timers.conn = setInterval(updateConnectionBadge, 250);
 }

@@ -1,0 +1,10 @@
+idf_component_register(
+    SRCS 
+        "wt_app_time.c"
+    INCLUDE_DIRS 
+        "include"
+    REQUIRES
+        driver
+        esp_timer
+        wt_app_log    
+)

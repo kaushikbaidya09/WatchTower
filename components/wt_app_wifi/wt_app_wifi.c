@@ -27,6 +27,7 @@
 #include "lwip/sys.h"
 #include "wt_app_wifi.h"
 #include "wt_app_log.h"
+#include "wt_app_time.h"
 
 #ifndef ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD
 #define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA2_PSK
@@ -108,10 +109,6 @@ static void nvs_load_profiles(void)
         s_profile_cnt = 3;
         strlcpy(s_profiles[0].ssid, "Wokwi-GUEST", WT_WIFI_SSID_LEN);
         strlcpy(s_profiles[0].passwd, "", WT_WIFI_PASS_LEN);
-        strlcpy(s_profiles[1].ssid, "Kaushik's GT 2 Pro", WT_WIFI_SSID_LEN);
-        strlcpy(s_profiles[1].passwd, "24681355", WT_WIFI_PASS_LEN);
-        strlcpy(s_profiles[2].ssid, "Hari 5th floor", WT_WIFI_SSID_LEN);
-        strlcpy(s_profiles[2].passwd, "7259466152", WT_WIFI_PASS_LEN);
         nvs_save_profiles();
         return;
     }
@@ -186,14 +183,46 @@ static void obtain_time(void)
     {
         vTaskDelay(pdMS_TO_TICKS(1000));
         time(&now);
-        localtime_r(&now, &ti);
+        gmtime_r(&now, &ti);
     }
-    setenv("TZ", "IST-5:30", 1);
-    tzset();
+
     if (retry < 15)
+    {
         APPLOG_I("NTP synced: %s", asctime(&ti));
+
+        time(&now);
+        APPLOG_I("EPOCH TIME %lld", now);
+
+        struct tm utc, local;
+        gmtime_r(&now, &utc);
+
+        setenv("TZ", "IST-5:30", 1);
+        tzset();
+        localtime_r(&now, &local);
+
+        APPLOG_I("NTP Time  : %02d/%02d/%04d %02d:%02d:%02d",
+                 ti.tm_mday, ti.tm_mon + 1, ti.tm_year + 1900,
+                 ti.tm_hour, ti.tm_min, ti.tm_sec);
+        APPLOG_I("UTC       : %02d/%02d/%04d %02d:%02d:%02d (UTC)",
+                 utc.tm_mday, utc.tm_mon + 1, utc.tm_year + 1900,
+                 utc.tm_hour, utc.tm_min, utc.tm_sec);
+        APPLOG_I("LOCAL     : %02d/%02d/%04d %02d:%02d:%02d (%s)",
+                 local.tm_mday, local.tm_mon + 1, local.tm_year + 1900,
+                 local.tm_hour, local.tm_min, local.tm_sec, tzname[0]);
+
+        wt_time_t rtc_time = {
+            .sec = ti.tm_sec,
+            .min = ti.tm_min,
+            .hour = ti.tm_hour,
+            .day = ti.tm_mday,
+            .month = ti.tm_mon + 1,
+            .year = ti.tm_year + 1900};
+        wt_time_set_time(&rtc_time);
+    }
     else
+    {
         APPLOG_W("NTP sync timed out");
+    }
 }
 
 /* ------------------------------------------------------------------ */

@@ -28,8 +28,8 @@
 #include "wt_app_settings.h"
 #include "wt_seg_display.h"
 #include "wt_app_sound.h"
+#include "wt_app_time.h"
 
-#define GPIO_OUTPUT_PIN 11
 #define WT_MAIN_POLL_MS 1000
 
 /* ------------------------------------------------------------------ */
@@ -107,6 +107,9 @@ void wt_task_main(void *pvParameters)
 void app_main(void)
 {
     esp_log_level_set("*", ESP_LOG_NONE);
+    setenv("TZ", "UTC0", 1);
+    tzset();
+
     wt_log_init();
 
     APPLOG_I("========== WATCHTOWER APPLICATION STARTED ==========");
@@ -119,6 +122,9 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    /* System time init */
+    wt_time_init();
 
     /* Load persistent settings from NVS */
     wt_settings_init();

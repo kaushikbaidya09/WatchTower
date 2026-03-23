@@ -29,6 +29,7 @@ typedef enum
     WT_SEGD_ANIM_PULSE,
     WT_SEGD_ANIM_RAINBOW,
     WT_SEGD_ANIM_WAVE,
+    WT_SEGD_ANIM_COLOR_FLOW,
 } wt_segd_anim_t;
 
 typedef enum

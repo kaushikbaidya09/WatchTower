@@ -244,7 +244,8 @@
       "top": -103.2,
       "left": -247.8,
       "attrs": { "volume": "100.0" }
-    }
+    },
+    { "type": "wokwi-ds1307", "id": "rtc1", "top": 177, "left": -172.7, "attrs": {} }
   ],
   "connections": [
     [ "esp:TX", "$serialMonitor:RX", "", [] ],
@@ -341,7 +342,11 @@
     [ "strip21:DOUT", "strip22:DIN", "green", [ "v0" ] ],
     [ "strip21:VSS.2", "strip22:VSS", "black", [ "v0" ] ],
     [ "bz1:1", "esp:GND.1", "black", [ "v0" ] ],
-    [ "bz1:2", "esp:11", "red", [ "v0" ] ]
+    [ "bz1:2", "esp:11", "red", [ "h-10", "v76.8" ] ],
+    [ "esp:12", "rtc1:SCL", "gold", [ "h-57.65", "v153.8" ] ],
+    [ "esp:13", "rtc1:SDA", "magenta", [ "h-57.65", "v134.7" ] ],
+    [ "esp:5V", "rtc1:5V", "red", [ "h-57.65", "v106" ] ],
+    [ "esp:GND.1", "rtc1:GND", "black", [ "h-57.65", "v86.4" ] ]
   ],
   "dependencies": {}
 }

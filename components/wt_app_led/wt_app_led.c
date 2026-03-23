@@ -153,6 +153,35 @@ static void wt_set_led_buf(int index, wt_segd_color_t color)
     s_pixels[index * 3 + 2] = color.blue;
 }
 
+// Digit base indices (from your layout)
+static const int digit_base[4] = {
+    0,  // D1
+    14, // D2
+    30, // D3 (skip colon 28–29)
+    44  // D4
+};
+
+// Segment order: G F A B C D E
+// Map segment_index (0–6) to physical order
+static const int seg_order[7] = {
+    0, // G
+    1, // F
+    2, // A
+    3, // B
+    4, // C
+    5, // D
+    6  // E
+};
+
+static int get_physical_led_index(int visual_digit, int segment_index, int led_in_seg)
+{
+    int base = digit_base[visual_digit];
+
+    int seg = seg_order[segment_index];
+
+    return base + seg * WT_SEGD_LEDS_PER_SEG + led_in_seg;
+}
+
 static wt_segd_color_t wt_segment_color_for(int visual_index, int segment_index, bool on,
                                             const wt_segd_request_t *req, float phase)
 {
@@ -167,7 +196,56 @@ static wt_segd_color_t wt_segment_color_for(int visual_index, int segment_index,
     {
     case WT_SEGD_ANIM_PULSE:
     {
-        float b = sinf(phase) * 0.5f + 0.5f;
+        // float b = sinf(phase) * 0.5f + 0.5f;
+        // color = wt_scale_color_intensity(req->color_on, (uint8_t)(b * req->intensity));
+        // break;
+
+        // /* BREATHING WAVE */
+        // int global_seg = visual_index * WT_SEGD_SEGS_PER_DIGIT + segment_index;
+        // float offset = global_seg * 0.5f;
+        // float b = sinf(phase + offset) * 0.5f + 0.5f;
+        // color = wt_scale_color_intensity(req->color_on, (uint8_t)(b * req->intensity));
+        // break;
+
+        // /* FIRE CRACKER */
+        // float noise = (float)(rand() % 100) / 100.0f; // 0–1
+        // float b = 0.7f + noise * 0.3f;
+        // color = wt_scale_color_intensity(req->color_on, (uint8_t)(b * req->intensity));
+        // break;
+
+        // /* SCAN LINE */
+        // int total = WT_SEGD_TOTAL_LEDS;
+        // float pos = fmodf(phase * 6.0f, total);
+        // int global_seg = visual_index * WT_SEGD_SEGS_PER_DIGIT + segment_index;
+        // float dist = fabsf(global_seg - pos);
+        // float b = expf(-dist * 1.5f); // sharp falloff
+        // color = wt_scale_color_intensity(req->color_on, (uint8_t)(b * req->intensity));
+        // break;
+
+        // /* DUAL COLOR FLOW */
+        // int global_seg = visual_index * WT_SEGD_SEGS_PER_DIGIT + segment_index;
+        // float p = phase + global_seg * 0.3f;
+        // int hue1 = ((int)(p * 180.0f)) % 360;
+        // int hue2 = (hue1 + 180) % 360;
+        // float mix = sinf(p) * 0.5f + 0.5f;
+        // wt_segd_color_t c1 = wt_hsv_to_rgb(hue1, 255, req->intensity);
+        // wt_segd_color_t c2 = wt_hsv_to_rgb(hue2, 255, req->intensity);
+        // color.red = (uint8_t)(c1.red * mix + c2.red * (1.0f - mix));
+        // color.green = (uint8_t)(c1.green * mix + c2.green * (1.0f - mix));
+        // color.blue = (uint8_t)(c1.blue * mix + c2.blue * (1.0f - mix));
+        // break;
+
+        /* COMET PHYSICAL */
+        int led0 = get_physical_led_index(visual_index, segment_index, 0);
+        int led1 = get_physical_led_index(visual_index, segment_index, 1);
+        float pos = (led0 + led1) * 0.5f;
+        float speed = 12.0f;
+        float direction = +1.0f;
+        float head = fmodf(phase * speed * direction, WT_SEGD_TOTAL_LEDS);
+        float dist = fabsf(pos - head);
+        if (dist > WT_SEGD_TOTAL_LEDS / 2)
+            dist = WT_SEGD_TOTAL_LEDS - dist;
+        float b = expf(-dist * 0.25f);
         color = wt_scale_color_intensity(req->color_on, (uint8_t)(b * req->intensity));
         break;
     }
@@ -181,6 +259,20 @@ static wt_segd_color_t wt_segment_color_for(int visual_index, int segment_index,
     {
         int global_seg = visual_index * WT_SEGD_SEGS_PER_DIGIT + segment_index;
         int hue = ((int)(phase * (360.0f / (2.0f * (float)M_PI))) + global_seg * WAVE_HUE_STEP) % 360;
+        color = wt_hsv_to_rgb(hue, 255, req->intensity);
+        break;
+    }
+    case WT_SEGD_ANIM_COLOR_FLOW:
+    {
+        int global_seg = visual_index * WT_SEGD_SEGS_PER_DIGIT + segment_index;
+        float flow_speed = 0.5f;
+        float offset = global_seg * 0.4f;
+        float p = phase + offset;
+        int hue = (int)(p * (360.0f / (2.0f * (float)M_PI))) % 360;
+
+        if (hue < 0)
+            hue += 360;
+
         color = wt_hsv_to_rgb(hue, 255, req->intensity);
         break;
     }
@@ -238,6 +330,148 @@ static void render_colon(bool on, const wt_segd_request_t *req, float phase, wt_
 
     wt_set_led_buf(WT_SEGD_COLON_LED_OFFSET, color);
     wt_set_led_buf(WT_SEGD_COLON_LED_OFFSET + 1, color);
+}
+
+uint8_t coordsX[WT_SEGD_TOTAL_LEDS] = {
+    242, 230, 217, 217, 230, 242, 255, 255, 255, 255, 242, 230, 217, 217, 179, 166, 153, 153, 166, 179,
+    191, 191, 191, 191, 179, 166, 153, 153, 128, 128, 89, 77, 64, 64, 77, 89, 102, 102, 102, 102, 89,
+    77, 64, 64, 26, 13, 0, 0, 13, 26, 38, 38, 38,
+    38, 26, 13, 0, 0};
+uint8_t coordsY[WT_SEGD_TOTAL_LEDS] = {
+    128, 128, 85, 43, 0, 0, 43, 85, 170, 213,
+    255, 255, 213, 170, 128, 128, 85, 43, 0,
+    0, 43, 85, 170, 213, 255, 255, 213, 170,
+    170, 85, 128, 128, 85, 43, 0, 0, 43, 85,
+    170, 213, 255, 255, 213, 170, 128, 128,
+    85, 43, 0, 0, 43, 85, 170, 213, 255, 255, 213, 170};
+uint8_t angles[WT_SEGD_TOTAL_LEDS] = {
+    125, 125, 118, 113, 110, 112, 117, 121, 130, 134, 139, 141, 137, 131, 122, 119, 96, 86, 89,
+    96, 107, 114, 132, 141, 153, 159, 159, 141, 223, 51, 6, 4, 11, 17, 27, 32, 32, 22, 247, 233, 230, 234, 244, 251, 2, 2, 6, 9, 14, 16, 13, 8, 252, 247, 243, 245, 249, 253};
+uint8_t radii[WT_SEGD_TOTAL_LEDS] = {201, 178, 158, 165, 196, 217, 232, 227, 225, 227, 209, 187, 158, 154, 84, 60, 50, 69, 102, 117, 122, 112, 107, 112, 102, 84, 50, 37, 17, 37, 84, 107, 135, 143, 135, 117, 84, 69, 60, 69, 102, 122, 135, 130, 201, 225, 251, 255, 239, 217, 187, 181, 178, 181, 209, 232, 251, 248};
+
+static int t = 0;
+static void effect_spiral_energy(void)
+{
+    for (int i = 0; i < WT_SEGD_TOTAL_LEDS; i++)
+    {
+        int hue = angles[i] * 3 + radii[i] * 2 + t;
+
+        int wave = (sin((radii[i] + t) * 0.05) + 1.0) * 127;
+
+        wt_segd_color_t c = wt_hsv_to_rgb(hue, 255, wave);
+        c = wt_scale_color_intensity(c, 140);
+
+        wt_set_led_buf(i, c);
+    }
+
+    t += 3;
+}
+
+static int t_rain = 0;
+
+void effect_rainbow_ring()
+{
+    for (int i = 0; i < WT_SEGD_TOTAL_LEDS; i++)
+    {
+        int hue = angles[i] * 2 + t_rain;
+
+        wt_segd_color_t c = wt_hsv_to_rgb(hue, 255, 180);
+        wt_set_led_buf(i, c);
+    }
+
+    t_rain += 2;
+}
+
+static int t_ripple = 0;
+
+void effect_ripple()
+{
+    for (int i = 0; i < WT_SEGD_TOTAL_LEDS; i++)
+    {
+        int wave = (sin((radii[i] + t_ripple) * 0.08) + 1.0) * 127;
+
+        wt_segd_color_t c = wt_hsv_to_rgb(160, 255, wave); // blue tones
+        wt_set_led_buf(i, c);
+    }
+
+    t_ripple += 3;
+}
+
+static int t_galaxy = 0;
+
+void effect_galaxy()
+{
+    for (int i = 0; i < WT_SEGD_TOTAL_LEDS; i++)
+    {
+        int hue = angles[i] * 4 + t_galaxy;
+
+        int brightness =
+            (sin((radii[i] * 0.1 + t_galaxy * 0.05)) + 1.0) * 127;
+
+        wt_segd_color_t c = wt_hsv_to_rgb(hue, 200, brightness);
+        wt_set_led_buf(i, c);
+    }
+
+    t_galaxy += 2;
+}
+
+static int t_flow = 0;
+
+void effect_xy_flow()
+{
+    for (int i = 0; i < WT_SEGD_TOTAL_LEDS; i++)
+    {
+        int hue =
+            coordsX[i] +
+            coordsY[i] +
+            t_flow;
+
+        wt_segd_color_t c = wt_hsv_to_rgb(hue, 255, 200);
+        wt_set_led_buf(i, c);
+    }
+
+    t_flow += 1;
+}
+
+static int t_wave = 0;
+
+void effect_shockwave()
+{
+    for (int i = 0; i < WT_SEGD_TOTAL_LEDS; i++)
+    {
+        int dist = abs(radii[i] - t_wave);
+
+        uint8_t bright = (dist < 20) ? (255 - dist * 10) : 0;
+
+        wt_segd_color_t c = wt_hsv_to_rgb(0, 255, bright);
+        wt_set_led_buf(i, c);
+    }
+
+    t_wave += 5;
+    if (t_wave > 255)
+        t_wave = 0;
+}
+
+void run_effects(int mode)
+{
+    switch (mode)
+    {
+    case 0:
+        effect_rainbow_ring();
+        break;
+    case 1:
+        effect_ripple();
+        break;
+    case 3:
+        effect_galaxy();
+        break;
+    case 5:
+        effect_xy_flow();
+        break;
+    case 6:
+        effect_shockwave();
+        break;
+    }
 }
 
 /*!
@@ -346,6 +580,8 @@ void wt_task_led(void *pvParameter)
         }
         render_colon(colon_on, &current, phase, &snapshot);
         wt_segd_snapshot_set(&snapshot);
+
+        run_effects(5);
 
         /* Transmit pixel buffer over RMT */
         ESP_ERROR_CHECK(rmt_transmit(led_chan, rtm_encoder_h,

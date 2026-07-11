@@ -103,15 +103,26 @@ static void ws_client_add(int fd)
 {
     if (!s_ws_mutex || xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(50)) != pdTRUE)
         return;
+
+    bool already = false;
+    int free_slot = -1;
     for (int i = 0; i < WS_MAX_CLIENTS; i++)
     {
-        if (s_ws_fds[i] < 0)
+        if (s_ws_fds[i] == fd)
         {
-            s_ws_fds[i] = fd;
+            already = true;
             break;
         }
+        if (free_slot < 0 && s_ws_fds[i] < 0)
+            free_slot = i;
     }
+    if (!already && free_slot >= 0)
+        s_ws_fds[free_slot] = fd;
     xSemaphoreGive(s_ws_mutex);
+
+    if (already)
+        return;
+
     s_ws_new_client = true;
     APPLOG_I("WS client connected fd=%d", fd);
 }
@@ -971,7 +982,12 @@ static void ws_reply(httpd_req_t *req, const char *text)
         .payload = (uint8_t *)text,
         .len = strlen(text),
     };
-    httpd_ws_send_frame(req, &pkt);
+    esp_err_t err = httpd_ws_send_frame(req, &pkt);
+    if (err != ESP_OK)
+    {
+        APPLOG_W("ws_reply: httpd_ws_send_frame failed (%s) len=%u fd=%d",
+                 esp_err_to_name(err), (unsigned)pkt.len, httpd_req_to_sockfd(req));
+    }
 }
 
 #define WT_WS_PROTO_VERSION 1
@@ -1163,15 +1179,27 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
     ws_reply(req, "{\"ack\":\"err\",\"msg\":\"unknown cmd\"}");
 }
 
+/*!
+    \brief  ws_post_handshake_cb for /ws — fires exactly once, right after the
+            WebSocket upgrade completes (CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT).
+
+            From IDF v6.0.1, the main .handler is no longer invoked for the
+            handshake itself (only for actual frames), so connection-time
+            setup — registering the fd for broadcasts and sending the
+            one-time hello/info frames — has to live here instead of behind
+            a req->method == HTTP_GET check in handler_ws().
+ */
+static esp_err_t ws_on_connect(httpd_req_t *req)
+{
+    ws_client_add(httpd_req_to_sockfd(req));
+    ws_send_hello(req);
+    ws_send_info(req);
+    return ESP_OK;
+}
+
 static esp_err_t handler_ws(httpd_req_t *req)
 {
-    if (req->method == HTTP_GET)
-    {
-        ws_client_add(httpd_req_to_sockfd(req));
-        ws_send_hello(req);
-        ws_send_info(req);
-        return ESP_OK;
-    }
+    int fd = httpd_req_to_sockfd(req);
 
     httpd_ws_frame_t pkt;
     memset(&pkt, 0, sizeof(pkt));
@@ -1180,13 +1208,13 @@ static esp_err_t handler_ws(httpd_req_t *req)
     esp_err_t ret = httpd_ws_recv_frame(req, &pkt, 0);
     if (ret != ESP_OK)
     {
-        ws_client_remove(httpd_req_to_sockfd(req));
+        ws_client_remove(fd);
         return ret;
     }
 
     if (pkt.type == HTTPD_WS_TYPE_CLOSE)
     {
-        ws_client_remove(httpd_req_to_sockfd(req));
+        ws_client_remove(fd);
         return ESP_OK;
     }
     if (pkt.type != HTTPD_WS_TYPE_TEXT || pkt.len == 0)
@@ -1195,7 +1223,7 @@ static esp_err_t handler_ws(httpd_req_t *req)
     if (pkt.len > WS_MAX_INBOUND_PAYLOAD)
     {
         APPLOG_W("WS rx: frame too large (%u bytes) — dropping connection", (unsigned)pkt.len);
-        ws_client_remove(httpd_req_to_sockfd(req));
+        ws_client_remove(fd);
         return ESP_FAIL;
     }
 
@@ -1211,7 +1239,7 @@ static esp_err_t handler_ws(httpd_req_t *req)
     if (ret != ESP_OK)
     {
         free(buf);
-        ws_client_remove(httpd_req_to_sockfd(req));
+        ws_client_remove(fd);
         return ret;
     }
 
@@ -1754,11 +1782,13 @@ static void start_server(void)
 
     s_http_server = server;
 
-#define REG(m, u, h)                                                  \
-    do                                                                \
-    {                                                                 \
-        httpd_uri_t _u = {.uri = (u), .method = (m), .handler = (h)}; \
-        httpd_register_uri_handler(server, &_u);                      \
+#define REG(m, u, h)                                                        \
+    do                                                                      \
+    {                                                                       \
+        httpd_uri_t _u = {.uri = (u), .method = (m), .handler = (h)};       \
+        esp_err_t _e = httpd_register_uri_handler(server, &_u);             \
+        if (_e != ESP_OK)                                                  \
+            APPLOG_E("Failed to register URI %s: %s", (u), esp_err_to_name(_e)); \
     } while (0)
 
     /* ── Static assets — needed for initial page load only ── */
@@ -1790,8 +1820,11 @@ static void start_server(void)
             .handler = handler_ws,
             .is_websocket = true,
             .handle_ws_control_frames = false,
+            .ws_post_handshake_cb = ws_on_connect,
         };
-        httpd_register_uri_handler(server, &ws_uri);
+        esp_err_t ws_err = httpd_register_uri_handler(server, &ws_uri);
+        if (ws_err != ESP_OK)
+            APPLOG_E("Failed to register /ws handler: %s", esp_err_to_name(ws_err));
     }
 
     APPLOG_I("HTTP server started: 3 assets, 1 OTA, 9 captive, 1 WS");

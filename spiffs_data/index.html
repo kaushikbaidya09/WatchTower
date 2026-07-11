@@ -1,915 +1,1098 @@
 <!doctype html>
 <html lang="en" data-theme="dark">
-  <head>
-    <meta charset="UTF-8" />
-    <meta
-      name="viewport"
-      content="width=device-width,initial-scale=1.0,maximum-scale=1.0"
-    />
-    <title>WATCH TOWER</title>
-    <link
-      rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23081218'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%2324c2ff' stroke-width='2.5'/%3E%3Ccircle cx='16' cy='16' r='2.4' fill='%2324c2ff'/%3E%3C/svg%3E"
-    />
-    <link rel="stylesheet" href="style.css" />
-  </head>
-  <body>
-    <header id="hdr">
-      <div class="hdr-brand">
-        <img
-          class="hdr-logo"
-          src="data:image/png;base64,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"
-          alt="Watch Tower"
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0" />
+        <title>WATCH TOWER</title>
+        <link
+            rel="icon"
+            href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23081218'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%2324c2ff' stroke-width='2.5'/%3E%3Ccircle cx='16' cy='16' r='2.4' fill='%2324c2ff'/%3E%3C/svg%3E"
         />
-        <div class="hdr-wordmark">
-          <span class="wm-a">WATCH</span><span class="wm-b">TOWER</span>
-        </div>
-      </div>
-      <nav class="hdr-nav">
-        <button
-          class="nb active"
-          data-page="dashboard"
-          onclick="showPage('dashboard')"
-        >
-          <svg viewBox="0 0 20 20">
-            <rect x="2" y="2" width="7" height="7" rx="1.5" />
-            <rect x="11" y="2" width="7" height="7" rx="1.5" />
-            <rect x="2" y="11" width="7" height="7" rx="1.5" />
-            <rect x="11" y="11" width="7" height="7" rx="1.5" />
-          </svg>
-          <span>Dashboard</span>
-        </button>
-        <button class="nb" data-page="settings" onclick="showPage('settings')">
-          <svg viewBox="0 0 20 20">
-            <circle cx="10" cy="10" r="2.6" />
-            <path
-              d="M10 1.8l1 1.1 1.5-.2.6 1.4 1.4.6-.2 1.5 1.1 1-1.1 1 .2 1.5-1.4.6-.6 1.4-1.5-.2-1 1.1-1-1.1-1.5.2-.6-1.4-1.4-.6.2-1.5-1.1-1 1.1-1-.2-1.5 1.4-.6.6-1.4 1.5.2z"
-            />
-          </svg>
-          <span>Settings</span>
-        </button>
-      </nav>
-      <div class="hdr-right">
-        <div class="conn-badge" id="conn-badge" title="Browser connection to device">
-          <span class="conn-dot" id="conn-dot"></span>
-          <span id="conn-label">CONNECTING</span>
-        </div>
-        <div class="wbadge" id="wbadge">
-          <span class="wdot" id="wdot"></span>
-          <span id="wifi-label">Offline</span>
-        </div>
-        <button class="icn-btn" onclick="toggleTheme()" title="Toggle theme">
-          <svg class="sun-ic" viewBox="0 0 20 20">
-            <circle cx="10" cy="10" r="4" />
-            <path
-              d="M10 2v2M10 16v2M2 10h2M16 10h2M4.1 4.1l1.4 1.4M14.5 14.5l1.4 1.4M4.1 15.9l1.4-1.4M14.5 5.5l1.4-1.4"
-            />
-          </svg>
-          <svg class="moon-ic" viewBox="0 0 20 20">
-            <path d="M17 12A7 7 0 0 1 8 3 7 7 0 0 0 10 17a7 7 0 0 0 7-5z" />
-          </svg>
-        </button>
-        <button class="icn-btn" onclick="doRefresh()" title="Refresh data">
-          <svg viewBox="0 0 20 20">
-            <path
-              d="M14.5 5.5A6 6 0 1 0 16 10"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.8"
-            />
-            <polyline
-              points="14,2 14,6 18,6"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.8"
-            />
-          </svg>
-        </button>
-      </div>
-    </header>
-
-    <main id="main">
-      <!-- DASHBOARD -->
-      <div class="page active" id="pg-dashboard">
-        <section class="disp-section">
-          <div class="sec-hdr">
-            <span class="sec-lbl">LIVE DISPLAY</span>
-            <span class="live-pip">&#9679;</span>
-            <span id="live-time" class="mono sec-ts">--:--:--</span>
-          </div>
-          <div class="disp-card">
-            <div class="disp-bezel">
-              <canvas id="vd-canvas" width="500" height="110"></canvas>
-            </div>
-            <div class="disp-meta">
-              <span id="dinfo-fmt">24H</span>
-              <span class="dm-sep">&#183;</span>
-              <span id="dinfo-blink">BLINK ON</span>
-              <span class="dm-sep">&#183;</span>
-              <span id="dinfo-brt">BRT 80%</span>
-              <span class="dm-sep">&#183;</span>
-              <span id="dinfo-color">&#9679; #00C8FF</span>
-            </div>
-          </div>
-        </section>
-
-        <section class="stat-grid">
-          <div class="scard">
-            <span class="sc-ic">&#9201;</span>
-            <div>
-              <div class="sc-v mono" id="d-uptime">&#8212;</div>
-              <div class="sc-l">UPTIME</div>
-            </div>
-          </div>
-          <div class="scard">
-            <span class="sc-ic">&#128190;</span>
-            <div>
-              <div class="sc-v mono" id="d-heap">&#8212;</div>
-              <div class="sc-l">FREE HEAP</div>
-            </div>
-          </div>
-          <div class="scard">
-            <span class="sc-ic">&#128225;</span>
-            <div>
-              <div class="sc-v mono" id="d-rssi">&#8212;</div>
-              <div class="sc-l">WIFI RSSI</div>
-            </div>
-          </div>
-          <div class="scard">
-            <span class="sc-ic">&#127760;</span>
-            <div>
-              <div class="sc-v mono" id="d-ip">&#8212;</div>
-              <div class="sc-l">IP ADDRESS</div>
-            </div>
-          </div>
-          <div class="scard">
-            <span class="sc-ic">&#127777;</span>
-            <div>
-              <div class="sc-v mono" id="d-temp">&#8212;</div>
-              <div class="sc-l">MCU TEMP</div>
-            </div>
-          </div>
-          <div class="scard">
-            <span class="sc-ic">&#128230;</span>
-            <div>
-              <div class="sc-v mono" id="d-fw">&#8212;</div>
-              <div class="sc-l">FIRMWARE</div>
-            </div>
-          </div>
-        </section>
-
-        <section>
-          <div class="sec-hdr">
-            <span class="sec-lbl">RECENT LOGS</span
-            ><span class="live-pip">&#9679;</span>
-          </div>
-          <div class="log-mini" id="dash-logs"></div>
-        </section>
-      </div>
-
-      <!-- SETTINGS -->
-      <div class="page" id="pg-settings">
-        <div class="set-wrap">
-          <nav class="set-nav" id="set-nav">
-            <button class="snb active" data-s="sys" onclick="showSec('sys')">
-              <svg viewBox="0 0 20 20">
-                <rect x="2" y="4" width="16" height="3" rx="1.5" />
-                <rect x="2" y="9" width="16" height="3" rx="1.5" />
-                <rect x="2" y="14" width="10" height="3" rx="1.5" /></svg
-              ><span>System</span>
-            </button>
-            <button class="snb" data-s="fw" onclick="showSec('fw')">
-              <svg viewBox="0 0 20 20">
-                <path
-                  d="M12 2H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V8z"
-                />
-                <polyline points="14,2 14,8 20,8" /></svg
-              ><span>Firmware</span>
-            </button>
-            <button class="snb" data-s="logs" onclick="showSec('logs')">
-              <svg viewBox="0 0 20 20">
-                <rect x="3" y="2" width="14" height="16" rx="2" />
-                <line x1="6" y1="7" x2="14" y2="7" />
-                <line x1="6" y1="10" x2="14" y2="10" />
-                <line x1="6" y1="13" x2="11" y2="13" /></svg
-              ><span>Logs</span>
-            </button>
-            <button class="snb" data-s="display" onclick="showSec('display')">
-              <svg viewBox="0 0 20 20">
-                <rect x="1" y="3" width="18" height="12" rx="2" />
-                <line x1="7" y1="18" x2="13" y2="18" />
-                <line x1="10" y1="15" x2="10" y2="18" /></svg
-              ><span>Display</span>
-            </button>
-            <button class="snb" data-s="clock" onclick="showSec('clock')">
-              <svg viewBox="0 0 20 20">
-                <circle cx="10" cy="10" r="8" />
-                <polyline points="10,5 10,10 13,13" /></svg
-              ><span>Clock</span>
-            </button>
-            <button class="snb" data-s="power" onclick="showSec('power')">
-              <svg viewBox="0 0 20 20"><path d="M11 2v7h5L9 18v-7H4z" /></svg
-              ><span>Power</span>
-            </button>
-            <button class="snb" data-s="wifi" onclick="showSec('wifi')">
-              <svg viewBox="0 0 20 20">
-                <path d="M2 8Q10 1 18 8" />
-                <path d="M5 11.5Q10 7 15 11.5" />
-                <path d="M8 15Q10 13 12 15" />
-                <circle cx="10" cy="17.5" r="1.5" /></svg
-              ><span>WiFi</span>
-            </button>
-          </nav>
-
-          <div class="set-body">
-            <!-- SYSTEM -->
-            <div class="spane active" id="sec-sys">
-              <h2>System Status</h2>
-              <div class="rbar-grid">
-                <div class="rcard">
-                  <div class="rrow">
-                    <span>CPU</span><span class="mono" id="cpu-pct">0%</span>
-                  </div>
-                  <div class="rtrack">
-                    <div class="rfill cpu" id="cpu-bar"></div>
-                  </div>
+        <link rel="stylesheet" href="style.css" />
+    </head>
+    <body>
+        <div class="app-shell">
+            <header class="topbar" id="hdr">
+                <div class="tb-crumb">
+                    <button class="tb-home" onclick="showPage('dashboard')" title="Go to Dashboard">
+                        <img
+                            class="tb-logo"
+                            src="data:image/png;base64,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"
+                            alt="Watch Tower"
+                        />
+                    </button>
+                    <div class="tb-wordmark">WATCH TOWER</div>
+                    <span class="tb-sep">/</span>
+                    <span class="tb-current" id="tb-current">Dashboard</span>
                 </div>
-                <div class="rcard">
-                  <div class="rrow">
-                    <span>RAM</span><span class="mono" id="ram-pct">0%</span>
-                  </div>
-                  <div class="rtrack">
-                    <div class="rfill ram" id="ram-bar"></div>
-                  </div>
-                </div>
-                <div class="rcard">
-                  <div class="rrow">
-                    <span>Flash</span
-                    ><span class="mono" id="flash-pct">0%</span>
-                  </div>
-                  <div class="rtrack">
-                    <div class="rfill fla" id="flash-bar"></div>
-                  </div>
-                </div>
-                <div class="rcard">
-                  <div class="rrow">
-                    <span>SPIFFS</span
-                    ><span class="mono" id="spiffs-pct">0%</span>
-                  </div>
-                  <div class="rtrack">
-                    <div class="rfill spi" id="spiffs-bar"></div>
-                  </div>
-                </div>
-              </div>
-              <table class="itbl">
-                <tr>
-                  <td>Chip Model</td>
-                  <td class="mono" id="i-chip">&#8212;</td>
-                </tr>
-                <tr>
-                  <td>CPU Cores</td>
-                  <td class="mono" id="i-cores">&#8212;</td>
-                </tr>
-                <tr>
-                  <td>CPU Frequency</td>
-                  <td class="mono" id="i-freq">&#8212;</td>
-                </tr>
-                <tr>
-                  <td>Flash Size</td>
-                  <td class="mono" id="i-flash">&#8212;</td>
-                </tr>
-                <tr>
-                  <td>Free Heap</td>
-                  <td class="mono" id="i-heap">&#8212;</td>
-                </tr>
-                <tr>
-                  <td>Min Free Heap</td>
-                  <td class="mono" id="i-minheap">&#8212;</td>
-                </tr>
-                <tr>
-                  <td>Uptime</td>
-                  <td class="mono" id="i-uptime">&#8212;</td>
-                </tr>
-                <tr>
-                  <td>Temperature</td>
-                  <td class="mono" id="i-temp">&#8212;</td>
-                </tr>
-                <tr>
-                  <td>Reset Reason</td>
-                  <td class="mono" id="i-reset">&#8212;</td>
-                </tr>
-              </table>
-              <div class="disp-actions" style="margin-top: 18px">
-                <button class="bghost" onclick="rebootDevice()">
-                  Reboot Device
-                </button>
-              </div>
-            </div>
-
-            <!-- FIRMWARE -->
-            <div class="spane" id="sec-fw">
-              <h2>Firmware &amp; OTA</h2>
-              <table class="itbl" style="margin-bottom: 18px">
-                <tr>
-                  <td>Version</td>
-                  <td class="mono" id="fw-ver">&#8212;</td>
-                </tr>
-                <tr>
-                  <td>Build Date</td>
-                  <td class="mono" id="fw-date">&#8212;</td>
-                </tr>
-                <tr>
-                  <td>IDF Version</td>
-                  <td class="mono" id="fw-idf">&#8212;</td>
-                </tr>
-                <tr>
-                  <td>Active Slot</td>
-                  <td class="mono" id="fw-slot">&#8212;</td>
-                </tr>
-                <tr>
-                  <td>App0 State</td>
-                  <td class="mono" id="fw-app0">&#8212;</td>
-                </tr>
-                <tr>
-                  <td>App1 State</td>
-                  <td class="mono" id="fw-app1">&#8212;</td>
-                </tr>
-                <tr>
-                  <td>SPIFFS Used</td>
-                  <td class="mono" id="fw-spiffs">&#8212;</td>
-                </tr>
-              </table>
-              <div class="ucard">
-                <div class="uc-title">&#128260; Firmware Update (.bin)</div>
-                <div
-                  class="dz"
-                  id="fw-dz"
-                  onclick="document.getElementById('fw-inp').click()"
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    width="28"
-                    height="28"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.8"
-                  >
-                    <polyline points="16,16 12,12 8,16" />
-                    <line x1="12" y1="12" x2="12" y2="21" />
-                    <path d="M20.4 15.6A9 9 0 1 0 3.6 15.6" />
-                  </svg>
-                  <span>Drop <code>.bin</code> or click to browse</span>
-                  <input
-                    type="file"
-                    id="fw-inp"
-                    accept=".bin"
-                    hidden
-                    onchange="uploadFW(this.files[0])"
-                  />
-                </div>
-                <div class="prog hidden" id="fw-prog">
-                  <div class="pb"><div class="pf" id="fw-fill"></div></div>
-                  <span class="mono" id="fw-pct">0%</span>
-                </div>
-                <p class="uc-warn">&#9888; Device restarts after update</p>
-              </div>
-              <div class="ucard">
-                <div class="uc-title">&#127760; Web App Update</div>
-                <div
-                  class="dz"
-                  id="wa-dz"
-                  onclick="document.getElementById('wa-inp').click()"
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    width="28"
-                    height="28"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.8"
-                  >
-                    <polyline points="16,16 12,12 8,16" />
-                    <line x1="12" y1="12" x2="12" y2="21" />
-                    <path d="M20.4 15.6A9 9 0 1 0 3.6 15.6" />
-                  </svg>
-                  <span
-                    >Drop <code>.html / .css / .js</code> or click to
-                    browse</span
-                  >
-                  <input
-                    type="file"
-                    id="wa-inp"
-                    accept=".html,.css,.js,.bin"
-                    hidden
-                    onchange="uploadWA(this.files[0])"
-                  />
-                </div>
-                <div class="prog hidden" id="wa-prog">
-                  <div class="pb"><div class="pf" id="wa-fill"></div></div>
-                  <span class="mono" id="wa-pct">0%</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- LOGS -->
-            <div class="spane" id="sec-logs">
-              <h2>System Logs <span class="live-pip">&#9679;</span></h2>
-              <div class="log-tb">
-                <div class="lf-row">
-                  <button
-                    class="lfb active"
-                    data-lv="ALL"
-                    onclick="setLogFilter('ALL')"
-                  >
-                    ALL
-                  </button>
-                  <button
-                    class="lfb"
-                    data-lv="ERROR"
-                    onclick="setLogFilter('ERROR')"
-                  >
-                    ERR
-                  </button>
-                  <button
-                    class="lfb"
-                    data-lv="WARN"
-                    onclick="setLogFilter('WARN')"
-                  >
-                    WRN
-                  </button>
-                  <button
-                    class="lfb"
-                    data-lv="INFO"
-                    onclick="setLogFilter('INFO')"
-                  >
-                    INF
-                  </button>
-                  <button
-                    class="lfb"
-                    data-lv="DEBUG"
-                    onclick="setLogFilter('DEBUG')"
-                  >
-                    DBG
-                  </button>
-                </div>
-                <div class="la-row">
-                  <label class="swl"
-                    ><input type="checkbox" id="log-as" checked /><span
-                      class="swt"
-                      ><span class="swk"></span></span
-                    ><span>Auto-scroll</span></label
-                  >
-                  <button class="bsm" onclick="clearLogs()">Clear</button>
-                  <button class="bsm" onclick="exportLogs()">
-                    &#8595; Export
-                  </button>
-                </div>
-              </div>
-              <div class="log-viewer" id="log-viewer"></div>
-              <div class="log-ft">
-                <span id="log-count">0 entries</span
-                ><span id="log-ts">&#8212;</span>
-              </div>
-            </div>
-
-            <!-- DISPLAY -->
-            <div class="spane" id="sec-display">
-              <h2>Display Settings</h2>
-              <div class="dp-layout">
-                <div class="dp-ctrls">
-                  <div class="fg">
-                    <label>Display Mode</label>
-                    <select id="dp-mode" onchange="onDispChange()">
-                      <option value="time">Clock</option>
-                      <option value="number">Number</option>
-                      <option value="text">Text</option>
-                    </select>
-                  </div>
-                  <div class="fg" id="dp-value-wrap">
-                    <label>Number Value</label>
-                    <input
-                      type="number"
-                      id="dp-value"
-                      min="0"
-                      max="9999"
-                      value="1234"
-                      oninput="onDispChange()"
-                    />
-                  </div>
-                  <div class="fg" id="dp-text-wrap">
-                    <label>Display Text</label>
-                    <input
-                      type="text"
-                      id="dp-text"
-                      maxlength="4"
-                      value="HELO"
-                      oninput="this.value = this.value.toUpperCase().replace(/[^A-Z0-9 _-]/g, '').slice(0, 4); onDispChange();"
-                    />
-                  </div>
-                  <div class="fg">
-                    <label>Display Color</label>
-                    <div class="clr-row">
-                      <input
-                        type="color"
-                        id="dp-color"
-                        value="#00c8ff"
-                        oninput="onDispChange()"
-                      />
-                      <div class="swatches">
-                        <div
-                          class="sw"
-                          style="background: #00c8ff"
-                          onclick="pickColor('#00c8ff')"
-                        ></div>
-                        <div
-                          class="sw"
-                          style="background: #00ff99"
-                          onclick="pickColor('#00ff99')"
-                        ></div>
-                        <div
-                          class="sw"
-                          style="background: #ff8c00"
-                          onclick="pickColor('#ff8c00')"
-                        ></div>
-                        <div
-                          class="sw"
-                          style="background: #ffffff"
-                          onclick="pickColor('#ffffff')"
-                        ></div>
-                        <div
-                          class="sw"
-                          style="background: #ff3860"
-                          onclick="pickColor('#ff3860')"
-                        ></div>
-                        <div
-                          class="sw"
-                          style="background: #ffdd57"
-                          onclick="pickColor('#ffdd57')"
-                        ></div>
-                        <div
-                          class="sw"
-                          style="background: #b48eff"
-                          onclick="pickColor('#b48eff')"
-                        ></div>
-                        <div
-                          class="sw"
-                          style="background: #c0c0c0"
-                          onclick="pickColor('#c0c0c0')"
-                        ></div>
-                      </div>
+                <div class="tb-right">
+                    <div class="conn-badge" id="conn-badge" title="Browser connection to device">
+                        <span class="conn-dot" id="conn-dot"></span>
+                        <span id="conn-label">CONNECTING</span>
                     </div>
-                  </div>
-                  <div class="fg">
-                    <label
-                      >Brightness
-                      <span class="pill" id="brt-val">80%</span></label
-                    >
-                    <div class="brt-row">
-                      <span class="brt-mark mono">MIN</span>
-                      <input
-                        type="range"
-                        class="slider slider-brt"
-                        id="dp-brt"
-                        min="0"
-                        max="100"
-                        step="1"
-                        value="80"
-                        oninput="onDispChange()"
-                      />
-                      <span class="brt-mark mono">MAX</span>
+                    <div class="wbadge" id="wbadge">
+                        <span class="wdot" id="wdot"></span>
+                        <span id="wifi-label">Offline</span>
                     </div>
-                  </div>
-                  <div class="fg">
-                    <label>Effects</label>
-                    <div class="swl-list">
-                      <label class="swl"
-                        ><input
-                          type="checkbox"
-                          id="dp-blink"
-                          checked
-                          onchange="onDispChange()"
-                        /><span class="swt"><span class="swk"></span></span
-                        ><span>Colon Blink</span></label
-                      >
-                      <label class="swl"
-                        ><input
-                          type="checkbox"
-                          id="dp-scroll"
-                          onchange="onDispChange()"
-                        /><span class="swt"><span class="swk"></span></span
-                        ><span>Scroll Effect</span></label
-                      >
-                      <label class="swl"
-                        ><input
-                          type="checkbox"
-                          id="dp-pulse"
-                          onchange="onDispChange()"
-                        /><span class="swt"><span class="swk"></span></span
-                        ><span>Pulse Glow</span></label
-                      >
-                      <label class="swl"
-                        ><input
-                          type="checkbox"
-                          id="dp-trans"
-                          checked
-                          onchange="onDispChange()"
-                        /><span class="swt"><span class="swk"></span></span
-                        ><span>Digit Transitions</span></label
-                      >
+                    <button class="icn-btn" onclick="toggleTheme()" title="Toggle theme">
+                        <svg class="sun-ic" viewBox="0 0 20 20">
+                            <circle cx="10" cy="10" r="4" />
+                            <path
+                                d="M10 2v2M10 16v2M2 10h2M16 10h2M4.1 4.1l1.4 1.4M14.5 14.5l1.4 1.4M4.1 15.9l1.4-1.4M14.5 5.5l1.4-1.4"
+                            />
+                        </svg>
+                        <svg class="moon-ic" viewBox="0 0 20 20">
+                            <path d="M17 12A7 7 0 0 1 8 3 7 7 0 0 0 10 17a7 7 0 0 0 7-5z" />
+                        </svg>
+                    </button>
+                    <button class="icn-btn" onclick="doRefresh()" title="Refresh data">
+                        <svg viewBox="0 0 20 20">
+                            <path
+                                d="M14.5 5.5A6 6 0 1 0 16 10"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.8"
+                            />
+                            <polyline
+                                points="14,2 14,6 18,6"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.8"
+                            />
+                        </svg>
+                    </button>
+                </div>
+            </header>
+
+            <div class="body-row">
+                <aside class="sidebar" id="sidebar">
+                    <button
+                        class="sb-toggle"
+                        id="sb-toggle"
+                        onclick="toggleSidebar()"
+                        title="Collapse sidebar"
+                    >
+                        <svg viewBox="0 0 20 20">
+                            <polyline points="12,4 6,10 12,16" />
+                        </svg>
+                    </button>
+                    <div class="sb-scroll">
+                        <nav class="sb-nav">
+                            <button
+                                class="nb active"
+                                data-page="dashboard"
+                                title="Dashboard"
+                                onclick="showPage('dashboard')"
+                            >
+                                <svg viewBox="0 0 20 20">
+                                    <rect x="2" y="2" width="7" height="7" rx="1.5" />
+                                    <rect x="11" y="2" width="7" height="7" rx="1.5" />
+                                    <rect x="2" y="11" width="7" height="7" rx="1.5" />
+                                    <rect x="11" y="11" width="7" height="7" rx="1.5" />
+                                </svg>
+                                <span>Dashboard</span>
+                            </button>
+
+                            <div class="sb-label">Settings</div>
+
+                            <button
+                                class="snb active"
+                                data-s="sys"
+                                title="System"
+                                onclick="
+                                    showPage('settings');
+                                    showSec('sys');
+                                "
+                            >
+                                <svg viewBox="0 0 20 20">
+                                    <rect x="2" y="4" width="16" height="3" rx="1.5" />
+                                    <rect x="2" y="9" width="16" height="3" rx="1.5" />
+                                    <rect x="2" y="14" width="10" height="3" rx="1.5" />
+                                </svg>
+                                <span>System</span>
+                            </button>
+                            <button
+                                class="snb"
+                                data-s="fw"
+                                title="Firmware"
+                                onclick="
+                                    showPage('settings');
+                                    showSec('fw');
+                                "
+                            >
+                                <svg viewBox="0 0 20 20">
+                                    <path
+                                        d="M12 2H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V8z"
+                                    />
+                                    <polyline points="14,2 14,8 20,8" />
+                                </svg>
+                                <span>Firmware</span>
+                            </button>
+                            <button
+                                class="snb"
+                                data-s="logs"
+                                title="Logs"
+                                onclick="
+                                    showPage('settings');
+                                    showSec('logs');
+                                "
+                            >
+                                <svg viewBox="0 0 20 20">
+                                    <rect x="3" y="2" width="14" height="16" rx="2" />
+                                    <line x1="6" y1="7" x2="14" y2="7" />
+                                    <line x1="6" y1="10" x2="14" y2="10" />
+                                    <line x1="6" y1="13" x2="11" y2="13" />
+                                </svg>
+                                <span>Logs</span>
+                            </button>
+                            <button
+                                class="snb"
+                                data-s="display"
+                                title="Display"
+                                onclick="
+                                    showPage('settings');
+                                    showSec('display');
+                                "
+                            >
+                                <svg viewBox="0 0 20 20">
+                                    <rect x="1" y="3" width="18" height="12" rx="2" />
+                                    <line x1="7" y1="18" x2="13" y2="18" />
+                                    <line x1="10" y1="15" x2="10" y2="18" />
+                                </svg>
+                                <span>Display</span>
+                            </button>
+                            <button
+                                class="snb"
+                                data-s="clock"
+                                title="Clock"
+                                onclick="
+                                    showPage('settings');
+                                    showSec('clock');
+                                "
+                            >
+                                <svg viewBox="0 0 20 20">
+                                    <circle cx="10" cy="10" r="8" />
+                                    <polyline points="10,5 10,10 13,13" />
+                                </svg>
+                                <span>Clock</span>
+                            </button>
+                            <button
+                                class="snb"
+                                data-s="power"
+                                title="Power"
+                                onclick="
+                                    showPage('settings');
+                                    showSec('power');
+                                "
+                            >
+                                <svg viewBox="0 0 20 20"><path d="M11 2v7h5L9 18v-7H4z" /></svg>
+                                <span>Power</span>
+                            </button>
+                            <button
+                                class="snb"
+                                data-s="wifi"
+                                title="WiFi"
+                                onclick="
+                                    showPage('settings');
+                                    showSec('wifi');
+                                "
+                            >
+                                <svg viewBox="0 0 20 20">
+                                    <path d="M2 8Q10 1 18 8" />
+                                    <path d="M5 11.5Q10 7 15 11.5" />
+                                    <path d="M8 15Q10 13 12 15" />
+                                    <circle cx="10" cy="17.5" r="1.5" />
+                                </svg>
+                                <span>WiFi</span>
+                            </button>
+                        </nav>
                     </div>
-                  </div>
-                  <div class="fg">
-                    <label>Reaction</label>
-                    <select id="dp-react" onchange="onDispChange()">
-                      <option value="none">None</option>
-                      <option value="flash">Flash on Hour</option>
-                      <option value="sweep">Color Sweep</option>
-                      <option value="rainbow">Rainbow Cycle</option>
-                    </select>
-                  </div>
-                  <div class="disp-actions">
-                    <button class="bpri" onclick="forceSendDispSettings()">
-                      Set Display
-                    </button>
-                  </div>
-                </div>
-                <div class="dp-prev">
-                  <div class="pb-hdr">
-                    <span class="prev-lbl">LIVE PREVIEW</span>
-                    <button class="bsm" onclick="manualDisplayRefresh()">
-                      Refresh Preview
-                    </button>
-                  </div>
-                  <div class="prev-frame">
-                    <canvas id="prev-canvas" width="300" height="76"></canvas>
-                  </div>
-                  <p class="prev-hint">Changes auto-save to device instantly</p>
-                </div>
-              </div>
-            </div>
+                </aside>
 
-            <!-- CLOCK -->
-            <div class="spane" id="sec-clock">
-              <h2>Clock &amp; Time</h2>
-              <div class="ctrl-grid">
-                <div class="fg">
-                  <label>Time Format</label>
-                  <div class="seg">
-                    <button class="sgb active" id="fmt-24" onclick="setFmt(24)">
-                      24-Hour</button
-                    ><button class="sgb" id="fmt-12" onclick="setFmt(12)">
-                      12-Hour AM/PM
-                    </button>
-                  </div>
-                </div>
-                <div class="fg">
-                  <label>Timezone</label>
-                  <select id="tz-sel" onchange="onClockChange()">
-                    <option value="UTC0">UTC+0 &#8212; London</option>
-                    <option value="IST-5:30">UTC+5:30 &#8212; India</option>
-                    <option value="EST5EDT">UTC-5 &#8212; US Eastern</option>
-                    <option value="CST6CDT">UTC-6 &#8212; US Central</option>
-                    <option value="PST8PDT">UTC-8 &#8212; US Pacific</option>
-                    <option value="CET-1CEST">
-                      UTC+1 &#8212; Central Europe
-                    </option>
-                    <option value="MSK-3">UTC+3 &#8212; Moscow</option>
-                    <option value="GST-4">UTC+4 &#8212; Gulf</option>
-                    <option value="PKT-5">UTC+5 &#8212; Pakistan</option>
-                    <option value="BST-6">UTC+6 &#8212; Bangladesh</option>
-                    <option value="ICT-7">UTC+7 &#8212; Indochina</option>
-                    <option value="CST-8">UTC+8 &#8212; China/Singapore</option>
-                    <option value="JST-9">UTC+9 &#8212; Japan/Korea</option>
-                    <option value="AEST-10AEDT">
-                      UTC+10 &#8212; Australia East
-                    </option>
-                  </select>
-                </div>
-                <div class="fg">
-                  <label>NTP Server</label>
-                  <div class="inp-row">
-                    <input
-                      type="text"
-                      id="ntp-srv"
-                      value="pool.ntp.org"
-                      onchange="onClockChange()"
-                    /><button class="bsm" onclick="syncNTP()">Sync Now</button>
-                  </div>
-                  <span class="hint" id="ntp-hint">Last sync: &#8212;</span>
-                </div>
-                <div class="fg">
-                  <label>Alarm 1</label>
-                  <div class="alarm-r">
-                    <input
-                      type="time"
-                      id="al1-t"
-                      value="07:00"
-                      onchange="onClockChange()"
-                    /><label class="swl"
-                      ><input
-                        type="checkbox"
-                        id="al1-en"
-                        onchange="onClockChange()"
-                      /><span class="swt"><span class="swk"></span></span
-                      ><span>Enable</span></label
-                    >
-                  </div>
-                </div>
-                <div class="fg">
-                  <label>Alarm 2</label>
-                  <div class="alarm-r">
-                    <input
-                      type="time"
-                      id="al2-t"
-                      value="22:00"
-                      onchange="onClockChange()"
-                    /><label class="swl"
-                      ><input
-                        type="checkbox"
-                        id="al2-en"
-                        onchange="onClockChange()"
-                      /><span class="swt"><span class="swk"></span></span
-                      ><span>Enable</span></label
-                    >
-                  </div>
-                </div>
-                <div class="fg">
-                  <label>Notification Type</label>
-                  <select id="notif-type" onchange="onClockChange()">
-                    <option value="flash">Display Flash</option>
-                    <option value="blink">LED Blink</option>
-                    <option value="both">Flash + LED</option>
-                    <option value="none">Silent</option>
-                  </select>
-                </div>
-                <div class="fg">
-                  <label>Notification Sound</label>
-                  <select id="notif-sound" onchange="onClockChange()">
-                    <option value="beep">Short Beep</option>
-                    <option value="chime">Chime</option>
-                    <option value="alarm">Alarm Tone</option>
-                    <option value="none">None</option>
-                  </select>
-                </div>
-              </div>
-            </div>
+                <main id="main">
+                    <!-- DASHBOARD -->
+                    <div class="page active" id="pg-dashboard">
+                        <section class="disp-section">
+                            <div class="sec-hdr">
+                                <span class="sec-lbl">LIVE DISPLAY</span>
+                                <span class="live-pip">&#9679;</span>
+                                <span id="live-time" class="mono sec-ts">--:--:--</span>
+                            </div>
+                            <div class="disp-card">
+                                <div class="disp-bezel">
+                                    <canvas id="vd-canvas" width="500" height="110"></canvas>
+                                </div>
+                                <div class="disp-meta">
+                                    <span id="dinfo-fmt">24H</span>
+                                    <span class="dm-sep">&#183;</span>
+                                    <span id="dinfo-blink">BLINK ON</span>
+                                    <span class="dm-sep">&#183;</span>
+                                    <span id="dinfo-brt">BRT 80%</span>
+                                    <span class="dm-sep">&#183;</span>
+                                    <span id="dinfo-color">&#9679; #00C8FF</span>
+                                </div>
+                            </div>
+                        </section>
 
-            <!-- POWER -->
-            <div class="spane" id="sec-power">
-              <h2>Power &amp; Battery</h2>
-              <div class="batt-card">
-                <div class="batt-vis">
-                  <div class="batt-body">
-                    <div class="batt-fill" id="batt-fill"></div>
-                    <span class="batt-txt" id="batt-txt">&#8212;%</span>
-                  </div>
-                  <div class="batt-cap"></div>
-                </div>
-                <div class="batt-stats">
-                  <div class="bs">
-                    <div class="bsv mono" id="batt-v">&#8212;V</div>
-                    <div class="bsl">VOLTAGE</div>
-                  </div>
-                  <div class="bs">
-                    <div class="bsv mono" id="batt-ma">&#8212;mA</div>
-                    <div class="bsl">CURRENT</div>
-                  </div>
-                  <div class="bs">
-                    <div class="bsv mono" id="pwr-src">&#8212;</div>
-                    <div class="bsl">SOURCE</div>
-                  </div>
-                  <div class="bs">
-                    <div class="bsv mono" id="batt-eta">&#8212;h</div>
-                    <div class="bsl">ETA</div>
-                  </div>
-                </div>
-              </div>
-              <div class="ctrl-grid">
-                <div class="fg">
-                  <label>Sleep Mode</label>
-                  <select id="sl-mode" onchange="onPowerChange()">
-                    <option value="none">Disabled</option>
-                    <option value="light">Light Sleep</option>
-                    <option value="deep">Deep Sleep</option>
-                    <option value="auto">Auto (battery)</option>
-                  </select>
-                </div>
-                <div class="fg">
-                  <label>Auto-Sleep Timeout</label>
-                  <div class="inp-row">
-                    <input
-                      type="number"
-                      id="sl-timeout"
-                      value="30"
-                      min="0"
-                      max="3600"
-                      onchange="onPowerChange()"
-                    /><span class="unit">sec</span>
-                  </div>
-                </div>
-                <div class="fg">
-                  <label>Low Battery Alert</label>
-                  <div class="inp-row">
-                    <input
-                      type="number"
-                      id="batt-alert"
-                      value="20"
-                      min="5"
-                      max="50"
-                      onchange="onPowerChange()"
-                    /><span class="unit">%</span>
-                  </div>
-                </div>
-                <div class="fg">
-                  <label>Power Saving</label>
-                  <div class="swl-list">
-                    <label class="swl"
-                      ><input
-                        type="checkbox"
-                        id="ps-dim"
-                        checked
-                        onchange="onPowerChange()"
-                      /><span class="swt"><span class="swk"></span></span
-                      ><span>Auto-dim on inactivity</span></label
-                    >
-                    <label class="swl"
-                      ><input
-                        type="checkbox"
-                        id="ps-wifi"
-                        onchange="onPowerChange()"
-                      /><span class="swt"><span class="swk"></span></span
-                      ><span>WiFi DTIM power saving</span></label
-                    >
-                  </div>
-                </div>
-              </div>
-            </div>
+                        <section class="stat-grid">
+                            <div class="scard">
+                                <span class="sc-ic">
+                                    <svg viewBox="0 0 20 20">
+                                        <circle cx="10" cy="10" r="8" />
+                                        <polyline points="10,5 10,10 13,13" />
+                                    </svg>
+                                </span>
+                                <div>
+                                    <div class="sc-v mono" id="d-uptime">&#8212;</div>
+                                    <div class="sc-l">UPTIME</div>
+                                </div>
+                            </div>
+                            <div class="scard">
+                                <span class="sc-ic">
+                                    <svg viewBox="0 0 20 20">
+                                        <rect x="4" y="4" width="12" height="12" rx="2" />
+                                        <path
+                                            d="M7 4V1M10 4V1M13 4V1M7 19v-3M10 19v-3M13 19v-3M4 7H1M4 10H1M4 13H1M19 7h-3M19 10h-3M19 13h-3"
+                                        />
+                                    </svg>
+                                </span>
+                                <div>
+                                    <div class="sc-v mono" id="d-heap">&#8212;</div>
+                                    <div class="sc-l">FREE HEAP</div>
+                                </div>
+                            </div>
+                            <div class="scard">
+                                <span class="sc-ic">
+                                    <svg viewBox="0 0 20 20">
+                                        <path d="M2 8Q10 1 18 8" />
+                                        <path d="M5 11.5Q10 7 15 11.5" />
+                                        <path d="M8 15Q10 13 12 15" />
+                                        <circle cx="10" cy="17.5" r="1.5" />
+                                    </svg>
+                                </span>
+                                <div>
+                                    <div class="sc-v mono" id="d-rssi">&#8212;</div>
+                                    <div class="sc-l">WIFI RSSI</div>
+                                </div>
+                            </div>
+                            <div class="scard">
+                                <span class="sc-ic">
+                                    <svg viewBox="0 0 20 20">
+                                        <circle cx="10" cy="10" r="8" />
+                                        <ellipse cx="10" cy="10" rx="3.2" ry="8" />
+                                        <line x1="2" y1="10" x2="18" y2="10" />
+                                    </svg>
+                                </span>
+                                <div>
+                                    <div class="sc-v mono" id="d-ip">&#8212;</div>
+                                    <div class="sc-l">IP ADDRESS</div>
+                                </div>
+                            </div>
+                            <div class="scard">
+                                <span class="sc-ic">
+                                    <svg viewBox="0 0 20 20">
+                                        <rect x="8.4" y="3" width="3.2" height="9.5" rx="1.6" />
+                                        <circle cx="10" cy="14.5" r="2.6" />
+                                        <line x1="10" y1="5.5" x2="10" y2="11.5" />
+                                    </svg>
+                                </span>
+                                <div>
+                                    <div class="sc-v mono" id="d-temp">&#8212;</div>
+                                    <div class="sc-l">MCU TEMP</div>
+                                </div>
+                            </div>
+                            <div class="scard">
+                                <span class="sc-ic">
+                                    <svg viewBox="0 0 20 20">
+                                        <path d="M10 2 3 5.5v9L10 18l7-3.5v-9z" />
+                                        <path d="M3 5.5 10 9l7-3.5M10 9v9" />
+                                    </svg>
+                                </span>
+                                <div>
+                                    <div class="sc-v mono" id="d-fw">&#8212;</div>
+                                    <div class="sc-l">FIRMWARE</div>
+                                </div>
+                            </div>
+                        </section>
 
-            <!-- WIFI -->
-            <div class="spane" id="sec-wifi">
-              <h2>WiFi Settings</h2>
-              <div class="wstat-card">
-                <div class="wsc-dot" id="wsc-dot"></div>
-                <div class="wsc-info">
-                  <div class="wsc-ssid" id="wsc-ssid">Not connected</div>
-                  <div class="wsc-detail mono" id="wsc-detail">&#8212;</div>
-                </div>
-                <div class="wsc-right">
-                  <div class="rssi-ic" id="rssi-ic">
-                    <span></span><span></span><span></span><span></span>
-                  </div>
-                  <div class="mono rssi-val" id="rssi-v">&#8212; dBm</div>
-                </div>
-              </div>
-              <div class="prof-box">
-                <div class="pb-hdr">
-                  <span>Saved Networks</span
-                  ><button class="bsm" onclick="showAddWifi()">
-                    &#65291; Add
-                  </button>
-                </div>
-                <div id="profiles-list">
-                  <div class="empty">Loading&#8230;</div>
-                </div>
-              </div>
-              <div class="add-wifi-form hidden" id="add-wifi-form">
-                <div class="awf-title">Add Network</div>
-                <div class="fg">
-                  <label>SSID</label
-                  ><input
-                    type="text"
-                    id="new-ssid"
-                    placeholder="Network name"
-                    autocomplete="off"
-                  />
-                </div>
-                <div class="fg">
-                  <label>Password</label>
-                  <div class="inp-row">
-                    <input
-                      type="password"
-                      id="new-pass"
-                      placeholder="Password"
-                      autocomplete="new-password"
-                    /><button class="bsm" onclick="togglePw()">
-                      &#128065;
-                    </button>
-                  </div>
-                </div>
-                <div class="awf-btns">
-                  <button class="bpri" onclick="addProfile()">
-                    Add Profile</button
-                  ><button class="bghost" onclick="hideAddWifi()">
-                    Cancel
-                  </button>
-                </div>
-              </div>
+                        <section>
+                            <div class="sec-hdr">
+                                <span class="sec-lbl">RECENT LOGS</span
+                                ><span class="live-pip">&#9679;</span>
+                            </div>
+                            <div class="log-mini" id="dash-logs"></div>
+                        </section>
+                    </div>
+
+                    <!-- SETTINGS -->
+                    <div class="page" id="pg-settings">
+                        <div class="set-body">
+                            <!-- SYSTEM -->
+                            <div class="spane active" id="sec-sys">
+                                <h2>System Status</h2>
+                                <div class="rbar-grid">
+                                    <div class="rcard">
+                                        <div class="rrow">
+                                            <span>CPU</span
+                                            ><span class="mono" id="cpu-pct">0%</span>
+                                        </div>
+                                        <div class="rtrack">
+                                            <div class="rfill cpu" id="cpu-bar"></div>
+                                        </div>
+                                    </div>
+                                    <div class="rcard">
+                                        <div class="rrow">
+                                            <span>RAM</span
+                                            ><span class="mono" id="ram-pct">0%</span>
+                                        </div>
+                                        <div class="rtrack">
+                                            <div class="rfill ram" id="ram-bar"></div>
+                                        </div>
+                                    </div>
+                                    <div class="rcard">
+                                        <div class="rrow">
+                                            <span>Flash</span
+                                            ><span class="mono" id="flash-pct">0%</span>
+                                        </div>
+                                        <div class="rtrack">
+                                            <div class="rfill fla" id="flash-bar"></div>
+                                        </div>
+                                    </div>
+                                    <div class="rcard">
+                                        <div class="rrow">
+                                            <span>SPIFFS</span
+                                            ><span class="mono" id="spiffs-pct">0%</span>
+                                        </div>
+                                        <div class="rtrack">
+                                            <div class="rfill spi" id="spiffs-bar"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <table class="itbl">
+                                    <tr>
+                                        <td>Chip Model</td>
+                                        <td class="mono" id="i-chip">&#8212;</td>
+                                    </tr>
+                                    <tr>
+                                        <td>CPU Cores</td>
+                                        <td class="mono" id="i-cores">&#8212;</td>
+                                    </tr>
+                                    <tr>
+                                        <td>CPU Frequency</td>
+                                        <td class="mono" id="i-freq">&#8212;</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Flash Size</td>
+                                        <td class="mono" id="i-flash">&#8212;</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Free Heap</td>
+                                        <td class="mono" id="i-heap">&#8212;</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Min Free Heap</td>
+                                        <td class="mono" id="i-minheap">&#8212;</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Uptime</td>
+                                        <td class="mono" id="i-uptime">&#8212;</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Temperature</td>
+                                        <td class="mono" id="i-temp">&#8212;</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Reset Reason</td>
+                                        <td class="mono" id="i-reset">&#8212;</td>
+                                    </tr>
+                                </table>
+                                <div class="disp-actions" style="margin-top: 18px">
+                                    <button class="bghost" onclick="rebootDevice()">
+                                        Reboot Device
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- FIRMWARE -->
+                            <div class="spane" id="sec-fw">
+                                <h2>Firmware &amp; OTA</h2>
+                                <table class="itbl" style="margin-bottom: 18px">
+                                    <tr>
+                                        <td>Version</td>
+                                        <td class="mono" id="fw-ver">&#8212;</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Build Date</td>
+                                        <td class="mono" id="fw-date">&#8212;</td>
+                                    </tr>
+                                    <tr>
+                                        <td>IDF Version</td>
+                                        <td class="mono" id="fw-idf">&#8212;</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Active Slot</td>
+                                        <td class="mono" id="fw-slot">&#8212;</td>
+                                    </tr>
+                                    <tr>
+                                        <td>App0 State</td>
+                                        <td class="mono" id="fw-app0">&#8212;</td>
+                                    </tr>
+                                    <tr>
+                                        <td>App1 State</td>
+                                        <td class="mono" id="fw-app1">&#8212;</td>
+                                    </tr>
+                                    <tr>
+                                        <td>SPIFFS Used</td>
+                                        <td class="mono" id="fw-spiffs">&#8212;</td>
+                                    </tr>
+                                </table>
+                                <div class="ucard">
+                                    <div class="uc-title">
+                                        <svg viewBox="0 0 20 20">
+                                            <path
+                                                d="M14.5 5.5A6 6 0 1 0 16 10"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                stroke-width="1.8"
+                                            />
+                                            <polyline
+                                                points="14,2 14,6 18,6"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                stroke-width="1.8"
+                                            />
+                                        </svg>
+                                        <span>Firmware Update (.bin)</span>
+                                    </div>
+                                    <div
+                                        class="dz"
+                                        id="fw-dz"
+                                        onclick="document.getElementById('fw-inp').click()"
+                                    >
+                                        <svg
+                                            viewBox="0 0 24 24"
+                                            width="28"
+                                            height="28"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            stroke-width="1.8"
+                                        >
+                                            <polyline points="16,16 12,12 8,16" />
+                                            <line x1="12" y1="12" x2="12" y2="21" />
+                                            <path d="M20.4 15.6A9 9 0 1 0 3.6 15.6" />
+                                        </svg>
+                                        <span>Drop <code>.bin</code> or click to browse</span>
+                                        <input
+                                            type="file"
+                                            id="fw-inp"
+                                            accept=".bin"
+                                            hidden
+                                            onchange="uploadFW(this.files[0])"
+                                        />
+                                    </div>
+                                    <div class="prog hidden" id="fw-prog">
+                                        <div class="pb"><div class="pf" id="fw-fill"></div></div>
+                                        <span class="mono" id="fw-pct">0%</span>
+                                    </div>
+                                    <p class="uc-warn">
+                                        <svg viewBox="0 0 20 20">
+                                            <path d="M10 3 18 17H2z" />
+                                            <line x1="10" y1="8" x2="10" y2="12" />
+                                            <circle
+                                                cx="10"
+                                                cy="14.5"
+                                                r="0.9"
+                                                fill="currentColor"
+                                                stroke="none"
+                                            />
+                                        </svg>
+                                        <span>Device restarts after update</span>
+                                    </p>
+                                </div>
+                                <div class="ucard">
+                                    <div class="uc-title">
+                                        <svg viewBox="0 0 20 20">
+                                            <circle cx="10" cy="10" r="8" />
+                                            <ellipse cx="10" cy="10" rx="3.2" ry="8" />
+                                            <line x1="2" y1="10" x2="18" y2="10" />
+                                        </svg>
+                                        <span>Web App Update</span>
+                                    </div>
+                                    <div
+                                        class="dz"
+                                        id="wa-dz"
+                                        onclick="document.getElementById('wa-inp').click()"
+                                    >
+                                        <svg
+                                            viewBox="0 0 24 24"
+                                            width="28"
+                                            height="28"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            stroke-width="1.8"
+                                        >
+                                            <polyline points="16,16 12,12 8,16" />
+                                            <line x1="12" y1="12" x2="12" y2="21" />
+                                            <path d="M20.4 15.6A9 9 0 1 0 3.6 15.6" />
+                                        </svg>
+                                        <span
+                                            >Drop <code>.html / .css / .js</code> or click to
+                                            browse</span
+                                        >
+                                        <input
+                                            type="file"
+                                            id="wa-inp"
+                                            accept=".html,.css,.js,.bin"
+                                            hidden
+                                            onchange="uploadWA(this.files[0])"
+                                        />
+                                    </div>
+                                    <div class="prog hidden" id="wa-prog">
+                                        <div class="pb"><div class="pf" id="wa-fill"></div></div>
+                                        <span class="mono" id="wa-pct">0%</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- LOGS -->
+                            <div class="spane" id="sec-logs">
+                                <h2>System Logs <span class="live-pip">&#9679;</span></h2>
+                                <div class="log-tb">
+                                    <div class="lf-row">
+                                        <button
+                                            class="lfb active"
+                                            data-lv="ALL"
+                                            onclick="setLogFilter('ALL')"
+                                        >
+                                            ALL
+                                        </button>
+                                        <button
+                                            class="lfb"
+                                            data-lv="ERROR"
+                                            onclick="setLogFilter('ERROR')"
+                                        >
+                                            ERR
+                                        </button>
+                                        <button
+                                            class="lfb"
+                                            data-lv="WARN"
+                                            onclick="setLogFilter('WARN')"
+                                        >
+                                            WRN
+                                        </button>
+                                        <button
+                                            class="lfb"
+                                            data-lv="INFO"
+                                            onclick="setLogFilter('INFO')"
+                                        >
+                                            INF
+                                        </button>
+                                        <button
+                                            class="lfb"
+                                            data-lv="DEBUG"
+                                            onclick="setLogFilter('DEBUG')"
+                                        >
+                                            DBG
+                                        </button>
+                                    </div>
+                                    <div class="la-row">
+                                        <label class="swl"
+                                            ><input type="checkbox" id="log-as" checked /><span
+                                                class="swt"
+                                                ><span class="swk"></span></span
+                                            ><span>Auto-scroll</span></label
+                                        >
+                                        <button class="bsm" onclick="clearLogs()">Clear</button>
+                                        <button class="bsm" onclick="exportLogs()">
+                                            &#8595; Export
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="log-viewer" id="log-viewer"></div>
+                                <div class="log-ft">
+                                    <span id="log-count">0 entries</span
+                                    ><span id="log-ts">&#8212;</span>
+                                </div>
+                            </div>
+
+                            <!-- DISPLAY -->
+                            <div class="spane" id="sec-display">
+                                <h2>Display Settings</h2>
+                                <div class="dp-layout">
+                                    <div class="dp-ctrls">
+                                        <div class="fg">
+                                            <label>Display Mode</label>
+                                            <select id="dp-mode" onchange="onDispChange()">
+                                                <option value="time">Clock</option>
+                                                <option value="number">Number</option>
+                                                <option value="text">Text</option>
+                                            </select>
+                                        </div>
+                                        <div class="fg" id="dp-value-wrap">
+                                            <label>Number Value</label>
+                                            <input
+                                                type="number"
+                                                id="dp-value"
+                                                min="0"
+                                                max="9999"
+                                                value="1234"
+                                                oninput="onDispChange()"
+                                            />
+                                        </div>
+                                        <div class="fg" id="dp-text-wrap">
+                                            <label>Display Text</label>
+                                            <input
+                                                type="text"
+                                                id="dp-text"
+                                                maxlength="4"
+                                                value="HELO"
+                                                oninput="
+                                                    this.value = this.value
+                                                        .toUpperCase()
+                                                        .replace(/[^A-Z0-9 _-]/g, '')
+                                                        .slice(0, 4);
+                                                    onDispChange();
+                                                "
+                                            />
+                                        </div>
+                                        <div class="fg">
+                                            <label>Display Color</label>
+                                            <div class="clr-row">
+                                                <input
+                                                    type="color"
+                                                    id="dp-color"
+                                                    value="#00c8ff"
+                                                    oninput="onDispChange()"
+                                                />
+                                                <div class="swatches">
+                                                    <div
+                                                        class="sw"
+                                                        style="background: #00c8ff"
+                                                        onclick="pickColor('#00c8ff')"
+                                                    ></div>
+                                                    <div
+                                                        class="sw"
+                                                        style="background: #00ff99"
+                                                        onclick="pickColor('#00ff99')"
+                                                    ></div>
+                                                    <div
+                                                        class="sw"
+                                                        style="background: #ff8c00"
+                                                        onclick="pickColor('#ff8c00')"
+                                                    ></div>
+                                                    <div
+                                                        class="sw"
+                                                        style="background: #ffffff"
+                                                        onclick="pickColor('#ffffff')"
+                                                    ></div>
+                                                    <div
+                                                        class="sw"
+                                                        style="background: #ff3860"
+                                                        onclick="pickColor('#ff3860')"
+                                                    ></div>
+                                                    <div
+                                                        class="sw"
+                                                        style="background: #ffdd57"
+                                                        onclick="pickColor('#ffdd57')"
+                                                    ></div>
+                                                    <div
+                                                        class="sw"
+                                                        style="background: #b48eff"
+                                                        onclick="pickColor('#b48eff')"
+                                                    ></div>
+                                                    <div
+                                                        class="sw"
+                                                        style="background: #c0c0c0"
+                                                        onclick="pickColor('#c0c0c0')"
+                                                    ></div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="fg">
+                                            <label
+                                                >Brightness
+                                                <span class="pill" id="brt-val">80%</span></label
+                                            >
+                                            <div class="brt-row">
+                                                <span class="brt-mark mono">MIN</span>
+                                                <input
+                                                    type="range"
+                                                    class="slider slider-brt"
+                                                    id="dp-brt"
+                                                    min="0"
+                                                    max="100"
+                                                    step="1"
+                                                    value="80"
+                                                    oninput="onDispChange()"
+                                                />
+                                                <span class="brt-mark mono">MAX</span>
+                                            </div>
+                                        </div>
+                                        <div class="fg">
+                                            <label>Effects</label>
+                                            <div class="swl-list">
+                                                <label class="swl"
+                                                    ><input
+                                                        type="checkbox"
+                                                        id="dp-blink"
+                                                        checked
+                                                        onchange="onDispChange()"
+                                                    /><span class="swt"
+                                                        ><span class="swk"></span></span
+                                                    ><span>Colon Blink</span></label
+                                                >
+                                                <label class="swl"
+                                                    ><input
+                                                        type="checkbox"
+                                                        id="dp-scroll"
+                                                        onchange="onDispChange()"
+                                                    /><span class="swt"
+                                                        ><span class="swk"></span></span
+                                                    ><span>Scroll Effect</span></label
+                                                >
+                                                <label class="swl"
+                                                    ><input
+                                                        type="checkbox"
+                                                        id="dp-pulse"
+                                                        onchange="onDispChange()"
+                                                    /><span class="swt"
+                                                        ><span class="swk"></span></span
+                                                    ><span>Pulse Glow</span></label
+                                                >
+                                                <label class="swl"
+                                                    ><input
+                                                        type="checkbox"
+                                                        id="dp-trans"
+                                                        checked
+                                                        onchange="onDispChange()"
+                                                    /><span class="swt"
+                                                        ><span class="swk"></span></span
+                                                    ><span>Digit Transitions</span></label
+                                                >
+                                            </div>
+                                        </div>
+                                        <div class="fg">
+                                            <label>Reaction</label>
+                                            <select id="dp-react" onchange="onDispChange()">
+                                                <option value="none">None</option>
+                                                <option value="flash">Flash on Hour</option>
+                                                <option value="sweep">Color Sweep</option>
+                                                <option value="rainbow">Rainbow Cycle</option>
+                                            </select>
+                                        </div>
+                                        <div class="disp-actions">
+                                            <button class="bpri" onclick="forceSendDispSettings()">
+                                                Set Display
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="dp-prev">
+                                        <div class="pb-hdr">
+                                            <span class="prev-lbl">LIVE PREVIEW</span>
+                                            <button class="bsm" onclick="manualDisplayRefresh()">
+                                                Refresh Preview
+                                            </button>
+                                        </div>
+                                        <div class="prev-frame">
+                                            <canvas
+                                                id="prev-canvas"
+                                                width="300"
+                                                height="76"
+                                            ></canvas>
+                                        </div>
+                                        <p class="prev-hint">
+                                            Changes auto-save to device instantly
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- CLOCK -->
+                            <div class="spane" id="sec-clock">
+                                <h2>Clock &amp; Time</h2>
+                                <div class="ctrl-grid">
+                                    <div class="fg">
+                                        <label>Time Format</label>
+                                        <div class="seg">
+                                            <button
+                                                class="sgb active"
+                                                id="fmt-24"
+                                                onclick="setFmt(24)"
+                                            >
+                                                24-Hour</button
+                                            ><button class="sgb" id="fmt-12" onclick="setFmt(12)">
+                                                12-Hour AM/PM
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="fg">
+                                        <label>Timezone</label>
+                                        <select id="tz-sel" onchange="onClockChange()">
+                                            <option value="UTC0">UTC+0 &#8212; London</option>
+                                            <option value="IST-5:30">UTC+5:30 &#8212; India</option>
+                                            <option value="EST5EDT">
+                                                UTC-5 &#8212; US Eastern
+                                            </option>
+                                            <option value="CST6CDT">
+                                                UTC-6 &#8212; US Central
+                                            </option>
+                                            <option value="PST8PDT">
+                                                UTC-8 &#8212; US Pacific
+                                            </option>
+                                            <option value="CET-1CEST">
+                                                UTC+1 &#8212; Central Europe
+                                            </option>
+                                            <option value="MSK-3">UTC+3 &#8212; Moscow</option>
+                                            <option value="GST-4">UTC+4 &#8212; Gulf</option>
+                                            <option value="PKT-5">UTC+5 &#8212; Pakistan</option>
+                                            <option value="BST-6">UTC+6 &#8212; Bangladesh</option>
+                                            <option value="ICT-7">UTC+7 &#8212; Indochina</option>
+                                            <option value="CST-8">
+                                                UTC+8 &#8212; China/Singapore
+                                            </option>
+                                            <option value="JST-9">UTC+9 &#8212; Japan/Korea</option>
+                                            <option value="AEST-10AEDT">
+                                                UTC+10 &#8212; Australia East
+                                            </option>
+                                        </select>
+                                    </div>
+                                    <div class="fg">
+                                        <label>NTP Server</label>
+                                        <div class="inp-row">
+                                            <input
+                                                type="text"
+                                                id="ntp-srv"
+                                                value="pool.ntp.org"
+                                                onchange="onClockChange()"
+                                            /><button class="bsm" onclick="syncNTP()">
+                                                Sync Now
+                                            </button>
+                                        </div>
+                                        <span class="hint" id="ntp-hint">Last sync: &#8212;</span>
+                                    </div>
+                                    <div class="fg">
+                                        <label>Alarm 1</label>
+                                        <div class="alarm-r">
+                                            <input
+                                                type="time"
+                                                id="al1-t"
+                                                value="07:00"
+                                                onchange="onClockChange()"
+                                            /><label class="swl"
+                                                ><input
+                                                    type="checkbox"
+                                                    id="al1-en"
+                                                    onchange="onClockChange()"
+                                                /><span class="swt"><span class="swk"></span></span
+                                                ><span>Enable</span></label
+                                            >
+                                        </div>
+                                    </div>
+                                    <div class="fg">
+                                        <label>Alarm 2</label>
+                                        <div class="alarm-r">
+                                            <input
+                                                type="time"
+                                                id="al2-t"
+                                                value="22:00"
+                                                onchange="onClockChange()"
+                                            /><label class="swl"
+                                                ><input
+                                                    type="checkbox"
+                                                    id="al2-en"
+                                                    onchange="onClockChange()"
+                                                /><span class="swt"><span class="swk"></span></span
+                                                ><span>Enable</span></label
+                                            >
+                                        </div>
+                                    </div>
+                                    <div class="fg">
+                                        <label>Notification Type</label>
+                                        <select id="notif-type" onchange="onClockChange()">
+                                            <option value="flash">Display Flash</option>
+                                            <option value="blink">LED Blink</option>
+                                            <option value="both">Flash + LED</option>
+                                            <option value="none">Silent</option>
+                                        </select>
+                                    </div>
+                                    <div class="fg">
+                                        <label>Notification Sound</label>
+                                        <select id="notif-sound" onchange="onClockChange()">
+                                            <option value="beep">Short Beep</option>
+                                            <option value="chime">Chime</option>
+                                            <option value="alarm">Alarm Tone</option>
+                                            <option value="none">None</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- POWER -->
+                            <div class="spane" id="sec-power">
+                                <h2>Power &amp; Battery</h2>
+                                <div class="batt-card">
+                                    <div class="batt-vis">
+                                        <div class="batt-body">
+                                            <div class="batt-fill" id="batt-fill"></div>
+                                            <span class="batt-txt" id="batt-txt">&#8212;%</span>
+                                        </div>
+                                        <div class="batt-cap"></div>
+                                    </div>
+                                    <div class="batt-stats">
+                                        <div class="bs">
+                                            <div class="bsv mono" id="batt-v">&#8212;V</div>
+                                            <div class="bsl">VOLTAGE</div>
+                                        </div>
+                                        <div class="bs">
+                                            <div class="bsv mono" id="batt-ma">&#8212;mA</div>
+                                            <div class="bsl">CURRENT</div>
+                                        </div>
+                                        <div class="bs">
+                                            <div class="bsv mono" id="pwr-src">&#8212;</div>
+                                            <div class="bsl">SOURCE</div>
+                                        </div>
+                                        <div class="bs">
+                                            <div class="bsv mono" id="batt-eta">&#8212;h</div>
+                                            <div class="bsl">ETA</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="ctrl-grid">
+                                    <div class="fg">
+                                        <label>Sleep Mode</label>
+                                        <select id="sl-mode" onchange="onPowerChange()">
+                                            <option value="none">Disabled</option>
+                                            <option value="light">Light Sleep</option>
+                                            <option value="deep">Deep Sleep</option>
+                                            <option value="auto">Auto (battery)</option>
+                                        </select>
+                                    </div>
+                                    <div class="fg">
+                                        <label>Auto-Sleep Timeout</label>
+                                        <div class="inp-row">
+                                            <input
+                                                type="number"
+                                                id="sl-timeout"
+                                                value="30"
+                                                min="0"
+                                                max="3600"
+                                                onchange="onPowerChange()"
+                                            /><span class="unit">sec</span>
+                                        </div>
+                                    </div>
+                                    <div class="fg">
+                                        <label>Low Battery Alert</label>
+                                        <div class="inp-row">
+                                            <input
+                                                type="number"
+                                                id="batt-alert"
+                                                value="20"
+                                                min="5"
+                                                max="50"
+                                                onchange="onPowerChange()"
+                                            /><span class="unit">%</span>
+                                        </div>
+                                    </div>
+                                    <div class="fg">
+                                        <label>Power Saving</label>
+                                        <div class="swl-list">
+                                            <label class="swl"
+                                                ><input
+                                                    type="checkbox"
+                                                    id="ps-dim"
+                                                    checked
+                                                    onchange="onPowerChange()"
+                                                /><span class="swt"><span class="swk"></span></span
+                                                ><span>Auto-dim on inactivity</span></label
+                                            >
+                                            <label class="swl"
+                                                ><input
+                                                    type="checkbox"
+                                                    id="ps-wifi"
+                                                    onchange="onPowerChange()"
+                                                /><span class="swt"><span class="swk"></span></span
+                                                ><span>WiFi DTIM power saving</span></label
+                                            >
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- WIFI -->
+                            <div class="spane" id="sec-wifi">
+                                <h2>WiFi Settings</h2>
+                                <div class="wstat-card">
+                                    <div class="wsc-dot" id="wsc-dot"></div>
+                                    <div class="wsc-info">
+                                        <div class="wsc-ssid" id="wsc-ssid">Not connected</div>
+                                        <div class="wsc-detail mono" id="wsc-detail">&#8212;</div>
+                                    </div>
+                                    <div class="wsc-right">
+                                        <div class="rssi-ic" id="rssi-ic">
+                                            <span></span><span></span><span></span><span></span>
+                                        </div>
+                                        <div class="mono rssi-val" id="rssi-v">&#8212; dBm</div>
+                                    </div>
+                                </div>
+                                <div class="prof-box">
+                                    <div class="pb-hdr">
+                                        <span>Saved Networks</span
+                                        ><button class="bsm" onclick="showAddWifi()">
+                                            &#65291; Add
+                                        </button>
+                                    </div>
+                                    <div id="profiles-list">
+                                        <div class="empty">Loading&#8230;</div>
+                                    </div>
+                                </div>
+                                <div class="add-wifi-form hidden" id="add-wifi-form">
+                                    <div class="awf-title">Add Network</div>
+                                    <div class="fg">
+                                        <label>SSID</label
+                                        ><input
+                                            type="text"
+                                            id="new-ssid"
+                                            placeholder="Network name"
+                                            autocomplete="off"
+                                        />
+                                    </div>
+                                    <div class="fg">
+                                        <label>Password</label>
+                                        <div class="inp-row">
+                                            <input
+                                                type="password"
+                                                id="new-pass"
+                                                placeholder="Password"
+                                                autocomplete="new-password"
+                                            /><button
+                                                class="bsm icn-only"
+                                                onclick="togglePw()"
+                                                title="Show/hide password"
+                                            >
+                                                <svg viewBox="0 0 20 20">
+                                                    <path
+                                                        d="M1 10s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z"
+                                                    />
+                                                    <circle cx="10" cy="10" r="2.5" />
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="awf-btns">
+                                        <button class="bpri" onclick="addProfile()">
+                                            Add Profile</button
+                                        ><button class="bghost" onclick="hideAddWifi()">
+                                            Cancel
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </main>
             </div>
-          </div>
         </div>
-      </div>
-    </main>
-    <div id="toasts"></div>
-    <script src="app.js"></script>
-  </body>
+        <div id="toasts"></div>
+        <script src="app.js"></script>
+    </body>
 </html>

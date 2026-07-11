@@ -4,6 +4,6 @@ idf_component_register(
     INCLUDE_DIRS 
         "include"
     REQUIRES
-        driver
+        esp_driver_ledc
         wt_app_log
 )

@@ -11,6 +11,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                            */
@@ -90,5 +91,14 @@ bool wt_wifi_remove_profile(int index);
  * @return true if the request was accepted (async — connection may fail).
  */
 bool wt_wifi_connect_profile(int index);
+
+/**
+ * @brief  Monotonic counter incremented whenever WiFi state that matters to
+ *         UI clients changes (profile list edits, STA connect/disconnect,
+ *         AP client count, IP address). Does NOT change on RSSI drift alone,
+ *         so a caller can use it to decide "has anything worth re-pushing
+ *         changed" instead of resending the whole WiFi object on a timer.
+ */
+uint32_t wt_wifi_get_generation(void);
 
 #endif /* WT_APP_WIFI_H */

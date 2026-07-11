@@ -8,6 +8,7 @@
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -22,7 +23,6 @@
 #define WT_NVSK_COL_ON_G "col_g"
 #define WT_NVSK_COL_ON_B "col_b"
 #define WT_NVSK_INTENSITY "intensity"
-#define WT_NVSK_ANIM "anim"
 #define WT_NVSK_COLON_BLK "colon_blk"
 #define WT_NVSK_ANIM_SCROLL "anim_scroll"
 #define WT_NVSK_ANIM_PULSE "anim_pulse"
@@ -60,6 +60,8 @@
 
 static wt_settings_t wt_app_setting;
 static SemaphoreHandle_t wt_app_setting_mutex = NULL;
+static TaskHandle_t s_notify_task = NULL;
+static uint32_t s_generation = 0; /*!< Bumped on every successful wt_settings_set(); protected by wt_app_setting_mutex */
 
 /* ------------------------------------------------------------------ */
 /*  NVS Default Application Settings                                  */
@@ -130,8 +132,9 @@ static void load_from_nvs(void)
     WT_NVS_GET_UINT8(WT_NVSK_COL_ON_G, wt_app_setting.color_on.green)
     WT_NVS_GET_UINT8(WT_NVSK_COL_ON_B, wt_app_setting.color_on.blue)
     WT_NVS_GET_UINT8(WT_NVSK_INTENSITY, wt_app_setting.intensity)
-    WT_NVS_GET_UINT8(WT_NVSK_ANIM, u8);
-    wt_app_setting.anim = (wt_segd_anim_t)u8;
+    /* .anim is not persisted — normalize_settings() always derives it from
+       reaction_effect/anim_pulse below, so a stored value would just be
+       overwritten before ever being read. */
     WT_NVS_GET_UINT8(WT_NVSK_COLON_BLK, u8);
     wt_app_setting.colon_blink = (bool)u8;
     WT_NVS_GET_UINT8(WT_NVSK_ANIM_SCROLL, u8);
@@ -180,7 +183,6 @@ static bool save_to_nvs(const wt_settings_t *s)
     nvs_set_u8(wt_nvs_h, WT_NVSK_COL_ON_G, s->color_on.green);
     nvs_set_u8(wt_nvs_h, WT_NVSK_COL_ON_B, s->color_on.blue);
     nvs_set_u8(wt_nvs_h, WT_NVSK_INTENSITY, s->intensity);
-    nvs_set_u8(wt_nvs_h, WT_NVSK_ANIM, (uint8_t)s->anim);
     nvs_set_u8(wt_nvs_h, WT_NVSK_COLON_BLK, (uint8_t)s->colon_blink);
     nvs_set_u8(wt_nvs_h, WT_NVSK_ANIM_SCROLL, (uint8_t)s->anim_scroll);
     nvs_set_u8(wt_nvs_h, WT_NVSK_ANIM_PULSE, (uint8_t)s->anim_pulse);
@@ -221,9 +223,21 @@ static void normalize_settings(wt_settings_t *s)
         return;
     }
 
+    /* Single source of truth for reaction_effect/anim_pulse -> anim: every
+       consumer (wt_task_main, the web WS push) reads the already-normalized
+       s->anim from wt_settings_get() instead of re-deriving it, so this is
+       the only place this mapping is written. */
     if (strcmp(s->reaction_effect, "rainbow") == 0)
     {
         s->anim = WT_SEGD_ANIM_RAINBOW;
+    }
+    else if (strcmp(s->reaction_effect, "wave") == 0)
+    {
+        s->anim = WT_SEGD_ANIM_WAVE;
+    }
+    else if (strcmp(s->reaction_effect, "colorflow") == 0)
+    {
+        s->anim = WT_SEGD_ANIM_COLOR_FLOW;
     }
     else if (s->anim_pulse)
     {
@@ -290,6 +304,7 @@ bool wt_settings_set(const wt_settings_t *wt_settings)
 
     xSemaphoreTake(wt_app_setting_mutex, portMAX_DELAY);
     wt_app_setting = normalized;
+    s_generation++;
     xSemaphoreGive(wt_app_setting_mutex);
 
     setenv("TZ", normalized.timezone, 1);
@@ -301,5 +316,26 @@ bool wt_settings_set(const wt_settings_t *wt_settings)
         APPLOG_E("Failed to save settings!");
     }
 
+    if (s_notify_task)
+    {
+        xTaskNotifyGive(s_notify_task);
+    }
+
     return status;
+}
+
+void wt_settings_register_notify_task(TaskHandle_t task)
+{
+    s_notify_task = task;
+}
+
+uint32_t wt_settings_get_generation(void)
+{
+    uint32_t gen;
+
+    xSemaphoreTake(wt_app_setting_mutex, portMAX_DELAY);
+    gen = s_generation;
+    xSemaphoreGive(wt_app_setting_mutex);
+
+    return gen;
 }

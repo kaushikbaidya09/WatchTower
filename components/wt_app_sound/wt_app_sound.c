@@ -30,7 +30,7 @@ typedef struct
     uint16_t duration_ms;
 } wt_buzzer_note_t;
 
-static QueueHandle_t wt_buzzer_queue;
+QueueHandle_t wt_buzzer_queue = NULL;
 
 /* ------------------------------------------------------------------ */
 /*  Sound definitions                                                 */
@@ -106,7 +106,10 @@ static void buzzer_init(void)
         .duty_resolution = LEDC_TIMER_10_BIT,
         .freq_hz = 2000,
         .clk_cfg = LEDC_AUTO_CLK};
-    ledc_timer_config(&timer);
+    if (ledc_timer_config(&timer) != ESP_OK)
+    {
+        APPLOG_E("ledc_timer_config failed");
+    }
 
     ledc_channel_config_t channel = {
         .gpio_num = WT_BUZZER_GPIO,
@@ -115,25 +118,37 @@ static void buzzer_init(void)
         .timer_sel = WT_BUZZER_TIMER,
         .duty = 0,
         .hpoint = 0};
-    ledc_channel_config(&channel);
+    if (ledc_channel_config(&channel) != ESP_OK)
+    {
+        APPLOG_E("ledc_channel_config failed");
+    }
 }
 
 static void buzzer_play_freq(uint32_t freq)
 {
     if (freq == 0)
     {
-        ledc_stop(LEDC_LOW_SPEED_MODE, WT_BUZZER_CHANNEL, 0);
+        if (ledc_stop(LEDC_LOW_SPEED_MODE, WT_BUZZER_CHANNEL, 0) != ESP_OK)
+        {
+            APPLOG_W("ledc_stop failed");
+        }
         return;
     }
 
-    ledc_set_freq(LEDC_LOW_SPEED_MODE, WT_BUZZER_TIMER, freq);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, WT_BUZZER_CHANNEL, 512);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, WT_BUZZER_CHANNEL);
+    if (ledc_set_freq(LEDC_LOW_SPEED_MODE, WT_BUZZER_TIMER, freq) != ESP_OK ||
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, WT_BUZZER_CHANNEL, 512) != ESP_OK ||
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, WT_BUZZER_CHANNEL) != ESP_OK)
+    {
+        APPLOG_W("Buzzer freq/duty update failed");
+    }
 }
 
-static void buzzer_stop()
+static void buzzer_stop(void)
 {
-    ledc_stop(LEDC_LOW_SPEED_MODE, WT_BUZZER_CHANNEL, 0);
+    if (ledc_stop(LEDC_LOW_SPEED_MODE, WT_BUZZER_CHANNEL, 0) != ESP_OK)
+    {
+        APPLOG_W("ledc_stop failed");
+    }
 }
 
 static void play_sound(wt_buzzer_note_t *sound, int len)
@@ -164,8 +179,14 @@ void wt_sound_play_event(wt_sound_event_t event)
 
 void wt_task_sound(void *pvParameter)
 {
+    if (!wt_buzzer_queue)
+    {
+        APPLOG_E("wt_buzzer_queue not created before wt_task_sound started");
+        vTaskDelete(NULL);
+        return;
+    }
+
     buzzer_init();
-    wt_buzzer_queue = xQueueCreate(5, sizeof(wt_sound_event_t));
 
     wt_sound_event_t event;
 

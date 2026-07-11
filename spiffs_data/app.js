@@ -3,6 +3,14 @@
    All settings auto-save on change (debounced)
    ═══════════════════════════════════════════ */
 "use strict";
+/* Reconnect backoff: starts fast, doubles up to a cap so a rebooting
+   device isn't hammered but the common transient drop recovers quickly. */
+const WS_RETRY_MIN_MS = 1000;
+const WS_RETRY_MAX_MS = 8000;
+/* No message (display frames arrive every 50 ms while connected) for this
+   long means the socket is dead even if the browser hasn't noticed yet —
+   force a close so the reconnect path in initWebSocket() kicks in. */
+const WS_WATCHDOG_MS = 5000;
 const S = {
   color: "#e8e4de",
   brightness: 80,
@@ -14,7 +22,6 @@ const S = {
   colonOn: true,
   logFilter: "ALL",
   logs: [],
-  lastSeq: 0,
   wifi: null,
   display: null,
   displayMode: "time",
@@ -29,7 +36,8 @@ const S = {
   /* WebSocket */
   ws: null,
   wsConnected: false,
-  wsRetryMs: 3000,
+  wsRetryMs: WS_RETRY_MIN_MS,
+  wsWatchdog: null,
 };
 const _db = {};
 let renderQueued = false;
@@ -62,6 +70,21 @@ function setCheckedIfIdle(id, value) {
   if (!node || isFocused(id)) return;
   node.checked = !!value;
 }
+/* Read a form field back out, falling back to dflt when the element is
+   missing — the read-side counterpart of setValueIfIdle/setCheckedIfIdle,
+   used when building the object sent to the device. */
+function fieldStr(id, dflt) {
+  const node = el(id);
+  return node ? node.value : dflt;
+}
+function fieldNum(id, dflt) {
+  const node = el(id);
+  return node ? parseInt(node.value, 10) : dflt;
+}
+function fieldBool(id, dflt) {
+  const node = el(id);
+  return node ? node.checked : dflt;
+}
 function fmtBytes(b) {
   if (b == null) return "—";
   if (b < 1024) return b + "B";
@@ -77,9 +100,6 @@ function fmtUptime(s) {
   if (d > 0) return d + "d " + h + "h " + m + "m";
   if (h > 0) return h + "h " + m + "m " + sc + "s";
   return m + "m " + sc + "s";
-}
-function pad2(n) {
-  return String(n).padStart(2, "0");
 }
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
@@ -311,38 +331,46 @@ function requestRender() {
 }
 
 /* ═════ PAGE / SECTION NAV ════════════════ */
-function showPage(id) {
-  document.querySelectorAll(".page").forEach(function (p) {
+/* Shared by showPage()/showSec() below — both swap which panel/nav-button
+   pair is "active" and remember the choice, differing only in which
+   selectors/prefixes/storage key they use. */
+function activateTab(opts) {
+  document.querySelectorAll(opts.panelSel).forEach(function (p) {
     p.classList.remove("active");
   });
-  document.querySelectorAll(".nb").forEach(function (b) {
+  document.querySelectorAll(opts.navSel).forEach(function (b) {
     b.classList.remove("active");
   });
-  const pg = el("pg-" + id);
-  if (pg) pg.classList.add("active");
-  const nb = document.querySelector('.nb[data-page="' + id + '"]');
+  const panel = el(opts.panelIdPrefix + opts.id);
+  if (panel) panel.classList.add("active");
+  const nb = document.querySelector(
+    opts.navSel + "[" + opts.navAttr + '="' + opts.id + '"]',
+  );
   if (nb) nb.classList.add("active");
   try {
-    localStorage.setItem("wt-page", id);
+    localStorage.setItem(opts.storageKey, opts.id);
   } catch (e) {}
 }
+function showPage(id) {
+  activateTab({
+    panelSel: ".page",
+    navSel: ".nb",
+    panelIdPrefix: "pg-",
+    navAttr: "data-page",
+    storageKey: "wt-page",
+    id: id,
+  });
+}
 function showSec(id) {
-  document.querySelectorAll(".spane").forEach(function (p) {
-    p.classList.remove("active");
+  activateTab({
+    panelSel: ".spane",
+    navSel: ".snb",
+    panelIdPrefix: "sec-",
+    navAttr: "data-s",
+    storageKey: "wt-sec",
+    id: id,
   });
-  document.querySelectorAll(".snb").forEach(function (b) {
-    b.classList.remove("active");
-  });
-  const pane = el("sec-" + id);
-  if (pane) pane.classList.add("active");
-  const nb = document.querySelector('.snb[data-s="' + id + '"]');
-  if (nb) nb.classList.add("active");
-  if (id === "display") {
-    resizeCanvas("prev-canvas");
-  }
-  try {
-    localStorage.setItem("wt-sec", id);
-  } catch (e) {}
+  if (id === "display") resizeCanvas("prev-canvas");
 }
 function toggleTheme() {
   const html = document.documentElement;
@@ -355,7 +383,11 @@ function toggleTheme() {
 function initTheme() {
   try {
     const t = localStorage.getItem("wt-theme");
-    if (t) document.documentElement.dataset.theme = t;
+    if (t) {
+      document.documentElement.dataset.theme = t;
+    } else if (window.matchMedia("(prefers-color-scheme: light)").matches) {
+      document.documentElement.dataset.theme = "light";
+    }
   } catch (e) {}
 }
 
@@ -410,7 +442,7 @@ function updateDispInfo() {
   }
 }
 function syncDisplayModeInputs() {
-  const mode = (el("dp-mode") && el("dp-mode").value) || S.displayMode || "time";
+  const mode = fieldStr("dp-mode", null) || S.displayMode || "time";
   const vw = el("dp-value-wrap");
   const tw = el("dp-text-wrap");
   if (vw) vw.style.display = mode === "number" ? "" : "none";
@@ -496,19 +528,15 @@ function exportLogs() {
 
 /* ═════ DISPLAY SETTINGS ════════════════ */
 function onDispChange() {
-  S.color = (el("dp-color") && el("dp-color").value) || "#e8e4de";
-  S.brightness = parseInt((el("dp-brt") && el("dp-brt").value) || "80");
-  S.blink = el("dp-blink") ? el("dp-blink").checked : true;
-  S.scroll = el("dp-scroll") ? el("dp-scroll").checked : false;
-  S.pulse = el("dp-pulse") ? el("dp-pulse").checked : false;
-  S.transition = el("dp-trans") ? el("dp-trans").checked : true;
-  S.displayMode = (el("dp-mode") && el("dp-mode").value) || "time";
-  S.displayValue = clamp(
-    parseInt((el("dp-value") && el("dp-value").value) || "0", 10) || 0,
-    0,
-    9999,
-  );
-  S.displayText = ((el("dp-text") && el("dp-text").value) || "")
+  S.color = fieldStr("dp-color", "#e8e4de");
+  S.brightness = fieldNum("dp-brt", 80);
+  S.blink = fieldBool("dp-blink", true);
+  S.scroll = fieldBool("dp-scroll", false);
+  S.pulse = fieldBool("dp-pulse", false);
+  S.transition = fieldBool("dp-trans", true);
+  S.displayMode = fieldStr("dp-mode", "time");
+  S.displayValue = clamp(fieldNum("dp-value", 0) || 0, 0, 9999);
+  S.displayText = fieldStr("dp-text", "")
     .toUpperCase()
     .replace(/[^A-Z0-9 _-]/g, "")
     .slice(0, 4);
@@ -521,7 +549,6 @@ function onDispChange() {
   debounce("disp", sendDispSettings, 600);
 }
 async function sendDispSettings() {
-  const react = el("dp-react");
   const r = await apiCmd("settings", {
     color: S.color,
     brightness: S.brightness,
@@ -529,7 +556,7 @@ async function sendDispSettings() {
     anim_scroll: S.scroll,
     anim_pulse: S.pulse,
     anim_transition: S.transition,
-    reaction_effect: react ? react.value : "none",
+    reaction_effect: fieldStr("dp-react", "none"),
     display_mode: S.displayMode,
     display_value: S.displayValue,
     display_text: S.displayText,
@@ -568,19 +595,19 @@ function onClockChange() {
 async function sendClockSettings() {
   const r = await apiCmd("settings", {
     time_format: S.fmt,
-    timezone: el("tz-sel") ? el("tz-sel").value : "UTC0",
-    ntp_server: el("ntp-srv") ? el("ntp-srv").value : "pool.ntp.org",
-    alarm1_time: el("al1-t") ? el("al1-t").value : "07:00",
-    alarm1_en: el("al1-en") ? el("al1-en").checked : false,
-    alarm2_time: el("al2-t") ? el("al2-t").value : "22:00",
-    alarm2_en: el("al2-en") ? el("al2-en").checked : false,
-    notif_type: el("notif-type") ? el("notif-type").value : "flash",
-    notif_sound: el("notif-sound") ? el("notif-sound").value : "beep",
+    timezone: fieldStr("tz-sel", "UTC0"),
+    ntp_server: fieldStr("ntp-srv", "pool.ntp.org"),
+    alarm1_time: fieldStr("al1-t", "07:00"),
+    alarm1_en: fieldBool("al1-en", false),
+    alarm2_time: fieldStr("al2-t", "22:00"),
+    alarm2_en: fieldBool("al2-en", false),
+    notif_type: fieldStr("notif-type", "flash"),
+    notif_sound: fieldStr("notif-sound", "beep"),
   });
   if (r && r.status === "ok") toast("Clock saved", "ok");
 }
 async function syncNTP() {
-  const srv = el("ntp-srv") ? el("ntp-srv").value : "pool.ntp.org";
+  const srv = fieldStr("ntp-srv", "pool.ntp.org");
   const r = await apiCmd("ntp_sync", { server: srv });
   if (r) {
     toast("NTP sync triggered", "ok");
@@ -600,11 +627,11 @@ function onPowerChange() {
 }
 async function sendPowerSettings() {
   const r = await apiCmd("settings", {
-    sleep_mode: el("sl-mode") ? el("sl-mode").value : "none",
-    sleep_timeout: el("sl-timeout") ? parseInt(el("sl-timeout").value) : 30,
-    batt_alert_pct: el("batt-alert") ? parseInt(el("batt-alert").value) : 20,
-    ps_dim: el("ps-dim") ? el("ps-dim").checked : true,
-    ps_wifi: el("ps-wifi") ? el("ps-wifi").checked : false,
+    sleep_mode: fieldStr("sl-mode", "none"),
+    sleep_timeout: fieldNum("sl-timeout", 30),
+    batt_alert_pct: fieldNum("batt-alert", 20),
+    ps_dim: fieldBool("ps-dim", true),
+    ps_wifi: fieldBool("ps-wifi", false),
   });
   if (r && r.status === "ok") toast("Power settings saved", "ok");
 }
@@ -648,10 +675,10 @@ function hideAddWifi() {
   if (el("new-pass")) el("new-pass").value = "";
 }
 async function addProfile() {
-  const ssid = (el("new-ssid") && el("new-ssid").value.trim()) || "";
-  const pass = (el("new-pass") && el("new-pass").value) || "";
+  const ssid = fieldStr("new-ssid", "").trim();
+  const pass = fieldStr("new-pass", "");
   if (!ssid) { toast("SSID required", "warn"); return; }
-  if (wsSend("wifi_add", { ssid: ssid, password: pass })) {
+  if (wsSend("wifi", { op: "add", ssid: ssid, password: pass })) {
     toast('"' + ssid + '" added', "ok");
     hideAddWifi();
   } else {
@@ -659,11 +686,11 @@ async function addProfile() {
   }
 }
 async function delProfile(idx) {
-  if (wsSend("wifi_del", { index: idx })) toast("Profile removed", "ok");
+  if (wsSend("wifi", { op: "del", index: idx })) toast("Profile removed", "ok");
   else toast("Failed — not connected", "err");
 }
 async function connectProfile(idx) {
-  if (wsSend("wifi_connect", { index: idx })) toast("Connecting…", "ok");
+  if (wsSend("wifi", { op: "connect", index: idx })) toast("Connecting…", "ok");
   else toast("Connect failed — not connected", "err");
 }
 function togglePw() {
@@ -680,7 +707,7 @@ function uploadFW(file) {
   }
   doUpload(
     file,
-    "/api/ota/firmware",
+    "/api/ota?target=firmware",
     "fw-prog",
     "fw-fill",
     "fw-pct",
@@ -701,7 +728,7 @@ function uploadWA(file) {
   }
   doUpload(
     file,
-    "/api/ota/" + file.name,
+    "/api/ota?target=" + encodeURIComponent(file.name),
     "wa-prog",
     "wa-fill",
     "wa-pct",
@@ -799,6 +826,34 @@ async function apiCmd(cmd, data) {
 function handleWsMessage(d) {
   if (!d) return;
 
+  /* ── One-time frame sent right after the WS handshake ─────────── */
+  if (d.type === "hello") {
+    console.info("WT hello: proto=" + d.proto + " features=" + (d.features || []).join(","));
+    return;
+  }
+
+  /* ── One-time boot-constant info (type:"info") — chip identity, build
+        info, OTA slot, reset reason. Never repeats, so these DOM targets
+        are only ever touched once per connection instead of every "full"
+        tick. ──────────────────────────────────────────────────────── */
+  if (d.type === "info") {
+    if (d.chip_model)   setText("i-chip",  d.chip_model);
+    if (d.cpu_cores)    setText("i-cores", d.cpu_cores);
+    if (d.cpu_freq_mhz) setText("i-freq",  d.cpu_freq_mhz + " MHz");
+    if (d.flash_size)   setText("i-flash", fmtBytes(d.flash_size));
+    if (d.reset_reason) setText("i-reset", d.reset_reason);
+    if (d.app_version) {
+      setText("d-fw",   d.app_version);
+      setText("fw-ver", d.app_version);
+    }
+    if (d.build_date)  setText("fw-date", d.build_date);
+    if (d.idf_version) setText("fw-idf",  d.idf_version);
+    if (d.ota_slot)    setText("fw-slot", d.ota_slot);
+    if (d.app0_state)  setText("fw-app0", d.app0_state);
+    if (d.app1_state)  setText("fw-app1", d.app1_state);
+    return;
+  }
+
   /* ── Fast path: display-only frame (type:"disp", 20 fps) ──────── */
   if (d.type === "disp") {
     if (d.display && d.display.available !== false) {
@@ -828,10 +883,6 @@ function handleWsMessage(d) {
     setText("d-temp", fmtTemperature(d.temperature));
     setText("i-temp", fmtTemperature(d.temperature));
   }
-  if (d.app_version) {
-    setText("d-fw", d.app_version);
-    setText("fw-ver", d.app_version);
-  }
   if (d.sta_connected != null) {
     const dot = el("wdot"), lbl = el("wifi-label");
     if (dot) dot.className = "wdot " + (d.sta_connected ? "up" : "down");
@@ -846,19 +897,9 @@ function handleWsMessage(d) {
   setBar("cpu",    d.cpu_usage      || 0, "cpu-pct");
   setBar("flash",  d.flash_used_pct || 0, "flash-pct");
   setBar("spiffs", d.spiffs_used_pct || 0, "spiffs-pct");
-  if (d.chip_model)    setText("i-chip",    d.chip_model);
-  if (d.cpu_cores)     setText("i-cores",   d.cpu_cores);
-  if (d.cpu_freq_mhz)  setText("i-freq",    d.cpu_freq_mhz + " MHz");
-  if (d.flash_size)    setText("i-flash",   fmtBytes(d.flash_size));
   if (d.min_free_heap) setText("i-minheap", fmtBytes(d.min_free_heap));
-  if (d.reset_reason)  setText("i-reset",   d.reset_reason);
 
   /* ── Firmware / OTA tab ── */
-  if (d.build_date)        setText("fw-date",   d.build_date);
-  if (d.idf_version)       setText("fw-idf",    d.idf_version);
-  if (d.ota_slot)          setText("fw-slot",   d.ota_slot);
-  if (d.app0_state)        setText("fw-app0",   d.app0_state);
-  if (d.app1_state)        setText("fw-app1",   d.app1_state);
   if (d.spiffs_used_pct != null) setText("fw-spiffs", d.spiffs_used_pct + "%");
 
   /* ── Display state ── */
@@ -946,7 +987,7 @@ function handleWsMessage(d) {
       if (s.anim_scroll     != null && !isFocused("dp-scroll")){ S.scroll     = s.anim_scroll;     setCheckedIfIdle("dp-scroll",s.anim_scroll); }
       if (s.anim_pulse      != null && !isFocused("dp-pulse")) { S.pulse      = s.anim_pulse;      setCheckedIfIdle("dp-pulse", s.anim_pulse); }
       if (s.anim_transition != null && !isFocused("dp-trans")) { S.transition = s.anim_transition; setCheckedIfIdle("dp-trans", s.anim_transition); }
-      if (s.reaction_effect && !isFocused("dp-react")) setValueIfIdle("dp-react", s.reaction_effect);
+      if (s.reaction_effect) setValueIfIdle("dp-react", s.reaction_effect);
       markActiveSwatch();
       syncDisplayModeInputs();
     }
@@ -954,12 +995,12 @@ function handleWsMessage(d) {
     /* Clock group — skip entirely if user is mid-edit */
     if (!_db.clock) {
       if (s.time_format) applyFmtUi(s.time_format);
-      if (s.timezone   && !isFocused("tz-sel"))   setValueIfIdle("tz-sel",     s.timezone);
-      if (s.ntp_server && !isFocused("ntp-srv"))  setValueIfIdle("ntp-srv",    s.ntp_server);
-      if (s.notif_type && !isFocused("notif-type"))  setValueIfIdle("notif-type",  s.notif_type);
-      if (s.notif_sound && !isFocused("notif-sound")) setValueIfIdle("notif-sound", s.notif_sound);
-      if (s.alarm1_time && !isFocused("al1-t"))   setValueIfIdle("al1-t",      s.alarm1_time);
-      if (s.alarm2_time && !isFocused("al2-t"))   setValueIfIdle("al2-t",      s.alarm2_time);
+      if (s.timezone)    setValueIfIdle("tz-sel",      s.timezone);
+      if (s.ntp_server)  setValueIfIdle("ntp-srv",      s.ntp_server);
+      if (s.notif_type)  setValueIfIdle("notif-type",   s.notif_type);
+      if (s.notif_sound) setValueIfIdle("notif-sound",  s.notif_sound);
+      if (s.alarm1_time) setValueIfIdle("al1-t",        s.alarm1_time);
+      if (s.alarm2_time) setValueIfIdle("al2-t",        s.alarm2_time);
       if (s.alarm1_en != null) setCheckedIfIdle("al1-en", s.alarm1_en);
       if (s.alarm2_en != null) setCheckedIfIdle("al2-en", s.alarm2_en);
     }
@@ -968,24 +1009,46 @@ function handleWsMessage(d) {
     if (!_db.power) {
       if (s.ps_dim  != null) setCheckedIfIdle("ps-dim",  s.ps_dim);
       if (s.ps_wifi != null) setCheckedIfIdle("ps-wifi", s.ps_wifi);
-      if (s.sleep_mode     && !isFocused("sl-mode"))    setValueIfIdle("sl-mode",    s.sleep_mode);
-      if (s.sleep_timeout  != null && !isFocused("sl-timeout"))  setValueIfIdle("sl-timeout",  String(s.sleep_timeout));
-      if (s.batt_alert_pct != null && !isFocused("batt-alert"))  setValueIfIdle("batt-alert",  String(s.batt_alert_pct));
+      if (s.sleep_mode)             setValueIfIdle("sl-mode",    s.sleep_mode);
+      if (s.sleep_timeout  != null) setValueIfIdle("sl-timeout", String(s.sleep_timeout));
+      if (s.batt_alert_pct != null) setValueIfIdle("batt-alert", String(s.batt_alert_pct));
     }
   }
 
-  /* ── Incremental log entries ── */
-  if (d.logs) {
-    const entries = d.logs.logs || d.logs.entries || [];
-    if (entries.length) {
-      entries.forEach(addLogEntry);
-      S.lastSeq = d.logs.next_seq || S.lastSeq + entries.length;
-      setText("log-ts", "Updated " + new Date().toLocaleTimeString());
-    }
+  /* ── Incremental log entries — device tracks the seq cursor itself and
+        only ever sends entries newer than what it last broadcast, so the
+        client just appends whatever arrives. ──────────────────────── */
+  if (d.logs?.entries?.length) {
+    d.logs.entries.forEach(addLogEntry);
+    setText("log-ts", "Updated " + new Date().toLocaleTimeString());
   }
 
   updateDispInfo();
   updateConnectionBadge();
+}
+
+function clearWsWatchdog() {
+  if (S.wsWatchdog) {
+    clearTimeout(S.wsWatchdog);
+    S.wsWatchdog = null;
+  }
+}
+/* Rearmed on every inbound message. If it ever fires, the socket has gone
+   quiet without telling the browser (e.g. a half-open TCP connection) —
+   force a close so the normal onclose → reconnect path takes over instead
+   of the UI sitting on stale data indefinitely. */
+function armWsWatchdog() {
+  clearWsWatchdog();
+  S.wsWatchdog = setTimeout(function () {
+    console.warn("WS watchdog: no data for " + WS_WATCHDOG_MS + "ms — forcing reconnect");
+    if (S.ws) {
+      try { S.ws.close(); } catch (_) {}
+    }
+  }, WS_WATCHDOG_MS);
+}
+function scheduleReconnect() {
+  setTimeout(initWebSocket, S.wsRetryMs);
+  S.wsRetryMs = Math.min(S.wsRetryMs * 2, WS_RETRY_MAX_MS);
 }
 
 function initWebSocket() {
@@ -994,6 +1057,7 @@ function initWebSocket() {
     try { S.ws.close(); } catch (_) {}
     S.ws = null;
   }
+  clearWsWatchdog();
 
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const url   = proto + "//" + location.host + "/ws";
@@ -1002,7 +1066,7 @@ function initWebSocket() {
     ws = new WebSocket(url);
   } catch (e) {
     console.warn("WebSocket init error:", e);
-    setTimeout(initWebSocket, S.wsRetryMs);
+    scheduleReconnect();
     return;
   }
 
@@ -1010,12 +1074,15 @@ function initWebSocket() {
 
   ws.onopen = function () {
     S.wsConnected = true;
+    S.wsRetryMs = WS_RETRY_MIN_MS; /* reset backoff on a successful connect */
     markConnectionSeen();
+    armWsWatchdog();
     console.info("WS connected →", url);
   };
 
   ws.onmessage = function (evt) {
     markConnectionSeen();
+    armWsWatchdog();
     try {
       handleWsMessage(JSON.parse(evt.data));
     } catch (e) {
@@ -1030,9 +1097,10 @@ function initWebSocket() {
   ws.onclose = function () {
     S.wsConnected = false;
     S.ws = null;
+    clearWsWatchdog();
     markConnectionLost();
     console.info("WS closed — retrying in", S.wsRetryMs, "ms");
-    setTimeout(initWebSocket, S.wsRetryMs);
+    scheduleReconnect();
   };
 }
 

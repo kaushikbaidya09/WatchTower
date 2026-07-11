@@ -4,17 +4,10 @@ idf_component_register(
        "wt_app_settings.c"
     INCLUDE_DIRS 
         "include"
-    REQUIRES 
-        esp_wifi 
+    REQUIRES
+        esp_wifi
         nvs_flash
-        esp_http_server
-        spiffs
-        esp_partition
-        esp_timer
-        app_update
-        spi_flash
         wt_app_log
         wt_app_led
-        wt_app_web
         wt_app_time
 )

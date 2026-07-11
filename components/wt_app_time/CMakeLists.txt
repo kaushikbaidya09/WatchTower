@@ -4,7 +4,7 @@ idf_component_register(
     INCLUDE_DIRS 
         "include"
     REQUIRES
-        driver
+        esp_driver_i2c
         esp_timer
-        wt_app_log    
+        wt_app_log
 )

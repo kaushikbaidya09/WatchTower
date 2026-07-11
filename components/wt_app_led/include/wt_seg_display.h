@@ -38,6 +38,7 @@ typedef enum
     WT_SEGD_MODE_TIME,
     WT_SEGD_MODE_TEXT,
     WT_SEGD_MODE_RAW,
+    WT_SEGD_MODE_DEMO, ///< Full-strip demo/test effect (see wt_segd_request_t.demo_effect)
 } wt_segd_mode_t;
 
 typedef struct
@@ -65,6 +66,7 @@ typedef struct
     int value;                 ///< valid for WT_SEGD_MODE_NUMBER integer 0-9999
     char text[5];              ///< valid for WT_SEGD_MODE_TEXT 4 chars + '\0'
     uint8_t raw[4];            ///< valid for WT_SEGD_MODE_RAW segment bitmasks
+    uint8_t demo_effect;       ///< valid for WT_SEGD_MODE_DEMO, selects run_effects() pattern
     uint8_t time_format;       ///< valid for WT_SEGD_MODE_TIME, 12 or 24
     bool colon;                ///< Steady colon on/off
     bool colon_blink;          ///< Blink colon at ~1 Hz (overrides colon when true)
@@ -94,6 +96,7 @@ typedef struct
  */
 void wt_segd_prepare_frame(const wt_segd_request_t *req, wt_segd_frame_t *frame);
 
+void wt_segd_snapshot_init(void);
 void wt_segd_snapshot_set(const wt_segd_snapshot_t *snapshot);
 bool wt_segd_snapshot_get(wt_segd_snapshot_t *snapshot);
 

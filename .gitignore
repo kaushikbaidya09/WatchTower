@@ -4,3 +4,5 @@
 /.clangd
 /sdkconfig.old
 /scripts
+dependencies.lock
+/managed_components

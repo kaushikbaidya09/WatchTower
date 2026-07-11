@@ -4,8 +4,10 @@
 
     Every APPLOG_x() call:
       1. Prints the formatted line to stdout (same as before).
-      2. Appends it to an internal ring buffer so the web server can
-         serve recent log entries via GET /api/logs?seq=N.
+      2. Appends it to an internal ring buffer. wt_app_web.c reads new
+         entries out via wt_log_read_json() and embeds them in the "logs"
+         field of the periodic WebSocket "full" frame (there is no
+         separate HTTP endpoint for this).
 
     Call wt_log_init() once before any task that uses APPLOG.
  */

@@ -6,8 +6,9 @@
     -----------
     Core 0:  wt_task_wifi   (WiFi driver + NTP)
              wt_task_web    (HTTP management server)
-    Core 1:  wt_task_main   (display logic)
-             wt_task_led    (WS2812 render loop)
+    Core 1:  wt_task_led    (WS2812 render loop)
+             wt_task_main   (display logic)
+             wt_task_sound  (buzzer driver)
  */
 #include <stdio.h>
 #include <string.h>
@@ -16,10 +17,10 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
 #include "nvs.h"
-#include "driver/gpio.h"
 
 #include "wt_app_log.h"
 #include "wt_app_wifi.h"
@@ -36,23 +37,39 @@
 /*  Main display task                                                    */
 /* ------------------------------------------------------------------ */
 
-static wt_segd_anim_t resolve_anim(const wt_settings_t *cfg)
+/*!
+    \brief  Field-by-field wt_segd_request_t comparison.
+
+    A raw memcmp() over the struct is unsafe here: compiler-inserted padding
+    between the mixed-size members (enum, int, char[], uint8_t[], bools) is
+    implementation-defined and can cause spurious or missed change detection.
+ */
+static bool segd_request_equal(const wt_segd_request_t *a, const wt_segd_request_t *b)
 {
-    if (strcmp(cfg->reaction_effect, "rainbow") == 0)
-    {
-        return WT_SEGD_ANIM_RAINBOW;
-    }
-    if (cfg->anim_pulse)
-    {
-        return WT_SEGD_ANIM_PULSE;
-    }
-    return WT_SEGD_ANIM_SOLID;
+    return (a->mode == b->mode) &&
+           (a->value == b->value) &&
+           (strncmp(a->text, b->text, sizeof(a->text)) == 0) &&
+           (memcmp(a->raw, b->raw, sizeof(a->raw)) == 0) &&
+           (a->demo_effect == b->demo_effect) &&
+           (a->time_format == b->time_format) &&
+           (a->colon == b->colon) &&
+           (a->colon_blink == b->colon_blink) &&
+           (a->anim == b->anim) &&
+           (a->color_on.red == b->color_on.red) &&
+           (a->color_on.green == b->color_on.green) &&
+           (a->color_on.blue == b->color_on.blue) &&
+           (a->color_off.red == b->color_off.red) &&
+           (a->color_off.green == b->color_off.green) &&
+           (a->color_off.blue == b->color_off.blue) &&
+           (a->intensity == b->intensity);
 }
 
 void wt_task_main(void *pvParameters)
 {
     wt_segd_request_t last_req = {0};
     bool has_last_req = false;
+
+    wt_settings_register_notify_task(xTaskGetCurrentTaskHandle());
 
     while (1)
     {
@@ -64,7 +81,7 @@ void wt_task_main(void *pvParameters)
             .time_format = cfg.time_format,
             .colon = true,
             .colon_blink = cfg.colon_blink,
-            .anim = resolve_anim(&cfg),
+            .anim = cfg.anim, /* already resolved by wt_settings normalize_settings() */
             .color_on = cfg.color_on,
             .color_off = cfg.color_off,
             .intensity = cfg.intensity,
@@ -88,7 +105,7 @@ void wt_task_main(void *pvParameters)
             req.mode = WT_SEGD_MODE_TIME;
         }
 
-        bool changed = !has_last_req || memcmp(&last_req, &req, sizeof(req)) != 0;
+        bool changed = !has_last_req || !segd_request_equal(&last_req, &req);
         if (wt_segd_queue && (changed || req.mode == WT_SEGD_MODE_TIME))
         {
             xQueueOverwrite(wt_segd_queue, &req);
@@ -96,7 +113,9 @@ void wt_task_main(void *pvParameters)
             has_last_req = true;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(WT_MAIN_POLL_MS));
+        /* Wake immediately when settings change; WT_MAIN_POLL_MS is only a
+           fallback so the TIME display keeps refreshing between changes. */
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(WT_MAIN_POLL_MS));
     }
 }
 
@@ -129,23 +148,35 @@ void app_main(void)
     /* Load persistent settings from NVS */
     wt_settings_init();
 
+    /* Create shared queues/sync primitives before any producer/consumer
+       task starts, so a fast producer never races a not-yet-created queue. */
+    wt_segd_queue = xQueueCreate(1, sizeof(wt_segd_request_t));
+    wt_buzzer_queue = xQueueCreate(5, sizeof(wt_sound_event_t));
+    wt_segd_snapshot_init();
+    if (!wt_segd_queue || !wt_buzzer_queue)
+    {
+        APPLOG_E("Failed to create shared queues — rebooting");
+        esp_restart();
+    }
+
     /* ---- Core 0 -------------------------------------------------- */
-    xTaskCreatePinnedToCore(wt_task_wifi, "WT_WIFI", 8192, NULL, 4, NULL, 0);
-    xTaskCreatePinnedToCore(wt_task_web, "WT_WEB", 16384, NULL, 3, NULL, 0);
+    BaseType_t task_ok = pdPASS;
+    task_ok &= xTaskCreatePinnedToCore(wt_task_wifi, "WT_WIFI", 8192, NULL, 4, NULL, 0);
+    task_ok &= xTaskCreatePinnedToCore(wt_task_web, "WT_WEB", 16384, NULL, 3, NULL, 0);
 
     /* ---- Core 1 -------------------------------------------------- */
-    xTaskCreatePinnedToCore(wt_task_led, "WT_LED", 16384, NULL, 5, NULL, 1);
-    xTaskCreatePinnedToCore(wt_task_main, "WT_MAIN", 4096, NULL, 4, NULL, 1);
-    xTaskCreatePinnedToCore(wt_task_sound, "WT_SOUND", 4096, NULL, 4, NULL, 1);
+    task_ok &= xTaskCreatePinnedToCore(wt_task_led, "WT_LED", 16384, NULL, 5, NULL, 1);
+    task_ok &= xTaskCreatePinnedToCore(wt_task_main, "WT_MAIN", 4096, NULL, 4, NULL, 1);
+    task_ok &= xTaskCreatePinnedToCore(wt_task_sound, "WT_SOUND", 4096, NULL, 4, NULL, 1);
+
+    if (task_ok != pdPASS)
+    {
+        APPLOG_E("Failed to create one or more application tasks — rebooting");
+        esp_restart();
+    }
 
     while (1)
     {
-        // Test sound events
-        // for (int i = 1; i < TOTAL_SOUNDS; i++) // skip NO_SOUND (0)
-        // {
-        //     wt_sound_play_event((wt_sound_event_t)i);
-        //     vTaskDelay(pdMS_TO_TICKS(3000));
-        // }
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
 }

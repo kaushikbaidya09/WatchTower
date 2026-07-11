@@ -4,8 +4,7 @@ idf_component_register(
         "wt_seg_display.c"
     INCLUDE_DIRS 
         "include"
-    PRIV_REQUIRES 
+    PRIV_REQUIRES
         esp_driver_rmt
-        driver
         wt_app_log
 )

@@ -11,7 +11,8 @@ idf_component_register(
         app_update
         spi_flash
         esp_driver_tsens
-        json
+        cjson
         wt_app_log
         wt_app_wifi
+        wt_app_led
 )

@@ -8,11 +8,13 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "esp_log.h"
+#include "esp_err.h"
 #include "driver/rmt_tx.h"
 
 #define RMT_RESOLUTION_HZ 10000000 ///< RMT clock 10 MHz → 1 tick = 0.1 µs
 #define RMT_GPIO_NUM 14            ///< GPIO pin connected to strip data-in
 #define FRAME_MS 20                ///< Render period in ms (50 fps)
+#define RMT_WAIT_TIMEOUT_MS 100    ///< Bounded RMT tx-done wait; skip frame instead of rebooting on timeout
 #define PULSE_SPEED 0.08f          ///< Phase increment/frame, PULSE  (~1.6 s/breath)
 #define RAINBOW_SPEED 0.04f        ///< Phase increment/frame, RAINBOW (~3.1 s/cycle)
 #define WAVE_HUE_STEP 20           ///< Hue degrees between adjacent segments in WAVE
@@ -153,33 +155,15 @@ static void wt_set_led_buf(int index, wt_segd_color_t color)
     s_pixels[index * 3 + 2] = color.blue;
 }
 
-// Digit base indices (from your layout)
-static const int digit_base[4] = {
-    0,  // D1
-    14, // D2
-    30, // D3 (skip colon 28–29)
-    44  // D4
-};
+/*!
+    \brief  Physical strip LED index for a digit/strip-position/sub-LED.
 
-// Segment order: G F A B C D E
-// Map segment_index (0–6) to physical order
-static const int seg_order[7] = {
-    0, // G
-    1, // F
-    2, // A
-    3, // B
-    4, // C
-    5, // D
-    6  // E
-};
-
-static int get_physical_led_index(int visual_digit, int segment_index, int led_in_seg)
+    Uses s_digit_led_start as the single source of truth for digit-to-LED
+    mapping so this stays consistent with render_digit().
+ */
+static int get_physical_led_index(int visual_digit, int strip_pos, int led_in_seg)
 {
-    int base = digit_base[visual_digit];
-
-    int seg = seg_order[segment_index];
-
-    return base + seg * WT_SEGD_LEDS_PER_SEG + led_in_seg;
+    return s_digit_led_start[visual_digit] + strip_pos * WT_SEGD_LEDS_PER_SEG + led_in_seg;
 }
 
 static wt_segd_color_t wt_segment_color_for(int visual_index, int segment_index, bool on,
@@ -196,45 +180,6 @@ static wt_segd_color_t wt_segment_color_for(int visual_index, int segment_index,
     {
     case WT_SEGD_ANIM_PULSE:
     {
-        // float b = sinf(phase) * 0.5f + 0.5f;
-        // color = wt_scale_color_intensity(req->color_on, (uint8_t)(b * req->intensity));
-        // break;
-
-        // /* BREATHING WAVE */
-        // int global_seg = visual_index * WT_SEGD_SEGS_PER_DIGIT + segment_index;
-        // float offset = global_seg * 0.5f;
-        // float b = sinf(phase + offset) * 0.5f + 0.5f;
-        // color = wt_scale_color_intensity(req->color_on, (uint8_t)(b * req->intensity));
-        // break;
-
-        // /* FIRE CRACKER */
-        // float noise = (float)(rand() % 100) / 100.0f; // 0–1
-        // float b = 0.7f + noise * 0.3f;
-        // color = wt_scale_color_intensity(req->color_on, (uint8_t)(b * req->intensity));
-        // break;
-
-        // /* SCAN LINE */
-        // int total = WT_SEGD_TOTAL_LEDS;
-        // float pos = fmodf(phase * 6.0f, total);
-        // int global_seg = visual_index * WT_SEGD_SEGS_PER_DIGIT + segment_index;
-        // float dist = fabsf(global_seg - pos);
-        // float b = expf(-dist * 1.5f); // sharp falloff
-        // color = wt_scale_color_intensity(req->color_on, (uint8_t)(b * req->intensity));
-        // break;
-
-        // /* DUAL COLOR FLOW */
-        // int global_seg = visual_index * WT_SEGD_SEGS_PER_DIGIT + segment_index;
-        // float p = phase + global_seg * 0.3f;
-        // int hue1 = ((int)(p * 180.0f)) % 360;
-        // int hue2 = (hue1 + 180) % 360;
-        // float mix = sinf(p) * 0.5f + 0.5f;
-        // wt_segd_color_t c1 = wt_hsv_to_rgb(hue1, 255, req->intensity);
-        // wt_segd_color_t c2 = wt_hsv_to_rgb(hue2, 255, req->intensity);
-        // color.red = (uint8_t)(c1.red * mix + c2.red * (1.0f - mix));
-        // color.green = (uint8_t)(c1.green * mix + c2.green * (1.0f - mix));
-        // color.blue = (uint8_t)(c1.blue * mix + c2.blue * (1.0f - mix));
-        // break;
-
         /* COMET PHYSICAL */
         int led0 = get_physical_led_index(visual_index, segment_index, 0);
         int led1 = get_physical_led_index(visual_index, segment_index, 1);
@@ -332,44 +277,26 @@ static void render_colon(bool on, const wt_segd_request_t *req, float phase, wt_
     wt_set_led_buf(WT_SEGD_COLON_LED_OFFSET + 1, color);
 }
 
-uint8_t coordsX[WT_SEGD_TOTAL_LEDS] = {
+static uint8_t coordsX[WT_SEGD_TOTAL_LEDS] = {
     242, 230, 217, 217, 230, 242, 255, 255, 255, 255, 242, 230, 217, 217, 179, 166, 153, 153, 166, 179,
     191, 191, 191, 191, 179, 166, 153, 153, 128, 128, 89, 77, 64, 64, 77, 89, 102, 102, 102, 102, 89,
     77, 64, 64, 26, 13, 0, 0, 13, 26, 38, 38, 38,
     38, 26, 13, 0, 0};
-uint8_t coordsY[WT_SEGD_TOTAL_LEDS] = {
+static uint8_t coordsY[WT_SEGD_TOTAL_LEDS] = {
     128, 128, 85, 43, 0, 0, 43, 85, 170, 213,
     255, 255, 213, 170, 128, 128, 85, 43, 0,
     0, 43, 85, 170, 213, 255, 255, 213, 170,
     170, 85, 128, 128, 85, 43, 0, 0, 43, 85,
     170, 213, 255, 255, 213, 170, 128, 128,
     85, 43, 0, 0, 43, 85, 170, 213, 255, 255, 213, 170};
-uint8_t angles[WT_SEGD_TOTAL_LEDS] = {
+static uint8_t angles[WT_SEGD_TOTAL_LEDS] = {
     125, 125, 118, 113, 110, 112, 117, 121, 130, 134, 139, 141, 137, 131, 122, 119, 96, 86, 89,
     96, 107, 114, 132, 141, 153, 159, 159, 141, 223, 51, 6, 4, 11, 17, 27, 32, 32, 22, 247, 233, 230, 234, 244, 251, 2, 2, 6, 9, 14, 16, 13, 8, 252, 247, 243, 245, 249, 253};
-uint8_t radii[WT_SEGD_TOTAL_LEDS] = {201, 178, 158, 165, 196, 217, 232, 227, 225, 227, 209, 187, 158, 154, 84, 60, 50, 69, 102, 117, 122, 112, 107, 112, 102, 84, 50, 37, 17, 37, 84, 107, 135, 143, 135, 117, 84, 69, 60, 69, 102, 122, 135, 130, 201, 225, 251, 255, 239, 217, 187, 181, 178, 181, 209, 232, 251, 248};
-
-static int t = 0;
-static void effect_spiral_energy(void)
-{
-    for (int i = 0; i < WT_SEGD_TOTAL_LEDS; i++)
-    {
-        int hue = angles[i] * 3 + radii[i] * 2 + t;
-
-        int wave = (sin((radii[i] + t) * 0.05) + 1.0) * 127;
-
-        wt_segd_color_t c = wt_hsv_to_rgb(hue, 255, wave);
-        c = wt_scale_color_intensity(c, 140);
-
-        wt_set_led_buf(i, c);
-    }
-
-    t += 3;
-}
+static uint8_t radii[WT_SEGD_TOTAL_LEDS] = {201, 178, 158, 165, 196, 217, 232, 227, 225, 227, 209, 187, 158, 154, 84, 60, 50, 69, 102, 117, 122, 112, 107, 112, 102, 84, 50, 37, 17, 37, 84, 107, 135, 143, 135, 117, 84, 69, 60, 69, 102, 122, 135, 130, 201, 225, 251, 255, 239, 217, 187, 181, 178, 181, 209, 232, 251, 248};
 
 static int t_rain = 0;
 
-void effect_rainbow_ring()
+static void effect_rainbow_ring(void)
 {
     for (int i = 0; i < WT_SEGD_TOTAL_LEDS; i++)
     {
@@ -379,12 +306,16 @@ void effect_rainbow_ring()
         wt_set_led_buf(i, c);
     }
 
-    t_rain += 2;
+    /* hue is mod-360'd inside wt_hsv_to_rgb, so wrapping the phase itself at
+       360 is an exact no-op visually while keeping the counter bounded
+       (unbounded "static int" growth is a CERT INT30-C signed-overflow risk
+       on a device that stays up for months). */
+    t_rain = (t_rain + 2) % 360;
 }
 
 static int t_ripple = 0;
 
-void effect_ripple()
+static void effect_ripple(void)
 {
     for (int i = 0; i < WT_SEGD_TOTAL_LEDS; i++)
     {
@@ -394,12 +325,17 @@ void effect_ripple()
         wt_set_led_buf(i, c);
     }
 
+    /* t_ripple feeds a sin() argument with a non-integer period, so it can't
+       wrap seamlessly at a small bound — reset it at a large bound instead,
+       just to keep it defined (see t_rain's comment for why this matters). */
     t_ripple += 3;
+    if (t_ripple >= 1000000000)
+        t_ripple = 0;
 }
 
 static int t_galaxy = 0;
 
-void effect_galaxy()
+static void effect_galaxy(void)
 {
     for (int i = 0; i < WT_SEGD_TOTAL_LEDS; i++)
     {
@@ -412,12 +348,15 @@ void effect_galaxy()
         wt_set_led_buf(i, c);
     }
 
+    /* Same rationale as effect_ripple()'s t_ripple wrap. */
     t_galaxy += 2;
+    if (t_galaxy >= 1000000000)
+        t_galaxy = 0;
 }
 
 static int t_flow = 0;
 
-void effect_xy_flow()
+static void effect_xy_flow(void)
 {
     for (int i = 0; i < WT_SEGD_TOTAL_LEDS; i++)
     {
@@ -430,12 +369,14 @@ void effect_xy_flow()
         wt_set_led_buf(i, c);
     }
 
-    t_flow += 1;
+    /* Same rationale as effect_rainbow_ring()'s t_rain wrap: hue is the only
+       consumer and it's mod-360'd internally, so wrapping here at 360 is exact. */
+    t_flow = (t_flow + 1) % 360;
 }
 
 static int t_wave = 0;
 
-void effect_shockwave()
+static void effect_shockwave(void)
 {
     for (int i = 0; i < WT_SEGD_TOTAL_LEDS; i++)
     {
@@ -452,7 +393,13 @@ void effect_shockwave()
         t_wave = 0;
 }
 
-void run_effects(int mode)
+/*!
+    \brief  Render a full-strip demo/test pattern, overwriting every LED.
+
+    Only invoked for WT_SEGD_MODE_DEMO requests (see wt_task_led) — never
+    runs during normal TIME/NUMBER/TEXT/RAW display operation.
+ */
+static void run_effects(int mode)
 {
     switch (mode)
     {
@@ -471,6 +418,8 @@ void run_effects(int mode)
     case 6:
         effect_shockwave();
         break;
+    default:
+        break;
     }
 }
 
@@ -483,11 +432,9 @@ void wt_task_led(void *pvParameter)
 {
     // APPLOG_I("---------- LED TASK STARTED ----------");
 
-    /* Create shared display queue */
-    wt_segd_queue = xQueueCreate(1, sizeof(wt_segd_request_t));
     if (!wt_segd_queue)
     {
-        APPLOG_E("Failed to create wt_segd_queue");
+        APPLOG_E("wt_segd_queue not created before wt_task_led started");
         vTaskDelete(NULL);
         return;
     }
@@ -531,6 +478,8 @@ void wt_task_led(void *pvParameter)
     uint32_t tick = 0;          ///< Frame counter used for colon blink timing
 
     APPLOG_I("Render loop started (58 LEDs: D1@0 D2@14 colon@28 D3@30 D4@44)");
+
+    TickType_t last_wake = xTaskGetTickCount();
 
     while (1)
     {
@@ -581,14 +530,31 @@ void wt_task_led(void *pvParameter)
         render_colon(colon_on, &current, phase, &snapshot);
         wt_segd_snapshot_set(&snapshot);
 
-        run_effects(5);
+        /* Demo/test effect pattern — only overwrites the strip when a demo
+           request is explicitly queued; never runs during normal display. */
+        if (current.mode == WT_SEGD_MODE_DEMO)
+        {
+            run_effects(current.demo_effect);
+        }
 
-        /* Transmit pixel buffer over RMT */
-        ESP_ERROR_CHECK(rmt_transmit(led_chan, rtm_encoder_h,
-                                     s_pixels, sizeof(s_pixels), &tx_config));
-        ESP_ERROR_CHECK(rmt_tx_wait_all_done(led_chan, portMAX_DELAY));
+        /* Transmit pixel buffer over RMT.  A transient RMT error skips this
+           frame and logs rather than rebooting the device. */
+        esp_err_t tx_err = rmt_transmit(led_chan, rtm_encoder_h,
+                                        s_pixels, sizeof(s_pixels), &tx_config);
+        if (tx_err != ESP_OK)
+        {
+            APPLOG_W("rmt_transmit failed: %s — skipping frame", esp_err_to_name(tx_err));
+        }
+        else
+        {
+            esp_err_t wait_err = rmt_tx_wait_all_done(led_chan, pdMS_TO_TICKS(RMT_WAIT_TIMEOUT_MS));
+            if (wait_err != ESP_OK)
+            {
+                APPLOG_W("rmt_tx_wait_all_done failed: %s — skipping frame", esp_err_to_name(wait_err));
+            }
+        }
 
-        vTaskDelay(pdMS_TO_TICKS(FRAME_MS));
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(FRAME_MS));
 
         /* Advance animation phases */
         pulse_phase += PULSE_SPEED;

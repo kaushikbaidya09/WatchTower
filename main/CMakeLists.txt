@@ -4,7 +4,6 @@ idf_component_register(
     INCLUDE_DIRS 
         "."
     REQUIRES
-        driver
         wt_app_log
         wt_app_wifi
         wt_app_led

@@ -144,17 +144,17 @@ static bool wt_rtc_validate_time(const wt_time_t *t)
 /* ------------------------------------------------------------------ */
 /*  Get RTC Time                                                      */
 /* ------------------------------------------------------------------ */
-void wt_time_get_time(wt_time_t *time)
+bool wt_time_get_time(wt_time_t *time)
 {
     if (time == NULL || s_rtc_dev == NULL)
     {
-        return;
+        return false;
     }
 
     if (!s_rtc_mutex || xSemaphoreTake(s_rtc_mutex, pdMS_TO_TICKS(50)) != pdTRUE)
     {
         APPLOG_E("Unable to get s_rtc_mutex");
-        return;
+        return false;
     }
 
     uint8_t reg = DS3231_REG_TIME;
@@ -192,7 +192,7 @@ void wt_time_get_time(wt_time_t *time)
     }
 
     xSemaphoreGive(s_rtc_mutex);
-    return;
+    return (ret == ESP_OK);
 }
 
 /* ------------------------------------------------------------------ */
@@ -262,7 +262,11 @@ void wt_time_set_time(const wt_time_t *time)
 static void wt_time_set_system(void)
 {
     wt_time_t rtc_time;
-    wt_time_get_time(&rtc_time);
+    if (!wt_time_get_time(&rtc_time))
+    {
+        APPLOG_W("RTC read failed — system time left unset");
+        return;
+    }
 
     struct tm t = {0};
     t.tm_sec = rtc_time.sec;

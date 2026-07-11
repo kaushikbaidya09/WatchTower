@@ -2,6 +2,7 @@
 #include <string.h>
 #include <time.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 typedef enum
 {
@@ -162,7 +163,7 @@ static const uint8_t wt_segd_symbol[SEGD_SYM_MAX] = {
     [SEGD_SYM_LOWER_Z] = WT_SEGD_A | WT_SEGD_B | WT_SEGD_D | WT_SEGD_E | WT_SEGD_G,
 };
 
-static portMUX_TYPE s_snapshot_lock = portMUX_INITIALIZER_UNLOCKED;
+static SemaphoreHandle_t s_snapshot_mutex = NULL;
 static wt_segd_snapshot_t s_snapshot = {0};
 static bool s_snapshot_valid = false;
 
@@ -212,6 +213,7 @@ void wt_segd_prepare_frame(const wt_segd_request_t *req, wt_segd_frame_t *frame)
     switch (req->mode)
     {
     case WT_SEGD_MODE_NUMBER:
+    {
         int val = req->value;
         val = val < 0      ? 0
               : val > 9999 ? 9999
@@ -221,8 +223,10 @@ void wt_segd_prepare_frame(const wt_segd_request_t *req, wt_segd_frame_t *frame)
         frame->digit[2] = wt_segd_char('0' + ((val / 10) % 10));
         frame->digit[3] = wt_segd_char('0' + (val % 10));
         break;
+    }
 
     case WT_SEGD_MODE_TIME:
+    {
         time_t now = time(NULL);
         struct tm t;
         localtime_r(&now, &t);
@@ -240,6 +244,7 @@ void wt_segd_prepare_frame(const wt_segd_request_t *req, wt_segd_frame_t *frame)
         frame->digit[2] = wt_segd_char('0' + (t.tm_min / 10));
         frame->digit[3] = wt_segd_char('0' + (t.tm_min % 10));
         break;
+    }
 
     case WT_SEGD_MODE_TEXT:
         for (int i = 0; i < WT_SEGD_NUM_DIGITS; i++)
@@ -257,6 +262,7 @@ void wt_segd_prepare_frame(const wt_segd_request_t *req, wt_segd_frame_t *frame)
         }
         break;
 
+    case WT_SEGD_MODE_DEMO:
     default:
         for (int i = 0; i < WT_SEGD_NUM_DIGITS; i++)
         {
@@ -268,33 +274,41 @@ void wt_segd_prepare_frame(const wt_segd_request_t *req, wt_segd_frame_t *frame)
     frame->colon = req->colon;
 }
 
+void wt_segd_snapshot_init(void)
+{
+    if (!s_snapshot_mutex)
+    {
+        s_snapshot_mutex = xSemaphoreCreateMutex();
+    }
+}
+
 void wt_segd_snapshot_set(const wt_segd_snapshot_t *snapshot)
 {
-    if (!snapshot)
+    if (!snapshot || !s_snapshot_mutex)
     {
         return;
     }
 
-    taskENTER_CRITICAL(&s_snapshot_lock);
+    xSemaphoreTake(s_snapshot_mutex, portMAX_DELAY);
     s_snapshot = *snapshot;
     s_snapshot_valid = true;
-    taskEXIT_CRITICAL(&s_snapshot_lock);
+    xSemaphoreGive(s_snapshot_mutex);
 }
 
 bool wt_segd_snapshot_get(wt_segd_snapshot_t *snapshot)
 {
-    if (!snapshot)
+    if (!snapshot || !s_snapshot_mutex)
     {
         return false;
     }
 
-    taskENTER_CRITICAL(&s_snapshot_lock);
+    xSemaphoreTake(s_snapshot_mutex, portMAX_DELAY);
     bool valid = s_snapshot_valid;
     if (valid)
     {
         *snapshot = s_snapshot;
     }
-    taskEXIT_CRITICAL(&s_snapshot_lock);
+    xSemaphoreGive(s_snapshot_mutex);
 
     return valid;
 }

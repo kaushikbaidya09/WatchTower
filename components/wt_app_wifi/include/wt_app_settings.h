@@ -8,6 +8,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "wt_seg_display.h"
 
 typedef struct
@@ -51,5 +53,18 @@ void wt_settings_init(void);
 wt_settings_t wt_settings_get(void);
 bool wt_settings_set(const wt_settings_t *s);
 bool wt_settings_parse_hex_color(const char *hex, uint8_t *r, uint8_t *g, uint8_t *b);
+
+/**
+ * @brief  Register a task to be notified (xTaskNotifyGive) whenever settings change.
+ *         Lets consumers block on ulTaskNotifyTake() instead of polling wt_settings_get().
+ */
+void wt_settings_register_notify_task(TaskHandle_t task);
+
+/**
+ * @brief  Monotonic counter incremented every time wt_settings_set() persists
+ *         a change. Lets consumers (e.g. the web server) detect "did settings
+ *         change since I last looked" without diffing the whole struct.
+ */
+uint32_t wt_settings_get_generation(void);
 
 #endif /* WT_APP_SETTINGS_H */

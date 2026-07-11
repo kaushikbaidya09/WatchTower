@@ -149,6 +149,8 @@ def full_frame(tick):
             "display_mode": "time",
             "display_value": 1234,
             "display_text": "HELO",
+            "bg_effect_en": False,
+            "demo_effect": "rainbow_ring",
             "time_format": 24,
             "timezone": "UTC0",
             "ntp_server": "pool.ntp.org",

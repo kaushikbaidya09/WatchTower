@@ -31,6 +31,8 @@
 #define WT_NVSK_DISP_MODE "disp_mode"
 #define WT_NVSK_DISP_VALUE "disp_value"
 #define WT_NVSK_DISP_TEXT "disp_text"
+#define WT_NVSK_BG_FX_EN "bg_fx_en"
+#define WT_NVSK_DEMO_EFFECT "demo_fx"
 /* clock */
 #define WT_NVSK_TIMEZONE "timezone"
 #define WT_NVSK_NTP_SRV "ntp_srv"
@@ -81,6 +83,8 @@ static const wt_settings_t wt_app_default_setting = {
     .display_mode = "time",
     .display_value = 1234,
     .display_text = "HELO",
+    .bg_effect_en = false,
+    .demo_effect = "rainbow_ring",
     .timezone = "IST-5:30",
     .ntp_server = "pool.ntp.org",
     .time_format = 24,
@@ -148,6 +152,9 @@ static void load_from_nvs(void)
     WT_NVS_GET_STR(WT_NVSK_DISP_MODE, wt_app_setting.display_mode)
     nvs_get_i16(wt_nvs_h, WT_NVSK_DISP_VALUE, &wt_app_setting.display_value);
     WT_NVS_GET_STR(WT_NVSK_DISP_TEXT, wt_app_setting.display_text)
+    WT_NVS_GET_UINT8(WT_NVSK_BG_FX_EN, u8);
+    wt_app_setting.bg_effect_en = (bool)u8;
+    WT_NVS_GET_STR(WT_NVSK_DEMO_EFFECT, wt_app_setting.demo_effect)
     WT_NVS_GET_STR(WT_NVSK_TIMEZONE, wt_app_setting.timezone)
     WT_NVS_GET_STR(WT_NVSK_NTP_SRV, wt_app_setting.ntp_server)
     WT_NVS_GET_UINT8(WT_NVSK_TIME_FMT, wt_app_setting.time_format)
@@ -192,6 +199,8 @@ static bool save_to_nvs(const wt_settings_t *s)
     nvs_set_str(wt_nvs_h, WT_NVSK_DISP_MODE, s->display_mode);
     nvs_set_i16(wt_nvs_h, WT_NVSK_DISP_VALUE, s->display_value);
     nvs_set_str(wt_nvs_h, WT_NVSK_DISP_TEXT, s->display_text);
+    nvs_set_u8(wt_nvs_h, WT_NVSK_BG_FX_EN, (uint8_t)s->bg_effect_en);
+    nvs_set_str(wt_nvs_h, WT_NVSK_DEMO_EFFECT, s->demo_effect);
     nvs_set_str(wt_nvs_h, WT_NVSK_TIMEZONE, s->timezone);
     nvs_set_str(wt_nvs_h, WT_NVSK_NTP_SRV, s->ntp_server);
     nvs_set_u8(wt_nvs_h, WT_NVSK_TIME_FMT, s->time_format);
@@ -224,7 +233,7 @@ static void normalize_settings(wt_settings_t *s)
     }
 
     /* Single source of truth for reaction_effect/anim_pulse -> anim: every
-       consumer (wt_task_main, the web WS push) reads the already-normalized
+       consumer (the app_main display-request loop, the web WS push) reads the already-normalized
        s->anim from wt_settings_get() instead of re-deriving it, so this is
        the only place this mapping is written. */
     if (strcmp(s->reaction_effect, "rainbow") == 0)
@@ -253,6 +262,16 @@ static void normalize_settings(wt_settings_t *s)
         (strcmp(s->display_mode, "text") != 0))
     {
         strlcpy(s->display_mode, "time", sizeof(s->display_mode));
+    }
+
+    /* Keep in sync with the run_effects() cases wired up in wt_app_led.c. */
+    if ((strcmp(s->demo_effect, "rainbow_ring") != 0) &&
+        (strcmp(s->demo_effect, "ripple") != 0) &&
+        (strcmp(s->demo_effect, "galaxy") != 0) &&
+        (strcmp(s->demo_effect, "xy_flow") != 0) &&
+        (strcmp(s->demo_effect, "shockwave") != 0))
+    {
+        strlcpy(s->demo_effect, "rainbow_ring", sizeof(s->demo_effect));
     }
 
     if (s->display_value < 0)

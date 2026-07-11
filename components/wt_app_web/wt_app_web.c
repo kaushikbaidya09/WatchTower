@@ -423,7 +423,7 @@ static void sanitize_display_text(const char *src, char *dst, size_t dst_len)
 }
 
 /* Note: no local "apply settings to display now" helper here — wt_settings_set()
-   already notifies wt_task_main (see wt_app_settings.c), which rebuilds and
+   already notifies the app_main display-request loop (see wt_app_settings.c), which rebuilds and
    pushes the wt_segd_request_t from the same wt_settings_t. Duplicating that
    mapping here would just be a second producer racing to write the same
    single-slot queue. */
@@ -474,6 +474,8 @@ static const wt_settings_field_t s_settings_fields[] = {
     WT_SF("display_mode", WT_SF_STR, display_mode),
     WT_SF("display_value", WT_SF_I16, display_value),
     WT_SF("display_text", WT_SF_STR_SANITIZED, display_text),
+    WT_SF("bg_effect_en", WT_SF_BOOL, bg_effect_en),
+    WT_SF("demo_effect", WT_SF_STR, demo_effect),
     WT_SF("time_format", WT_SF_U8, time_format),
     WT_SF("timezone", WT_SF_STR, timezone),
     WT_SF("ntp_server", WT_SF_STR, ntp_server),
@@ -1102,7 +1104,7 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
         settings_apply_json(&s, j);
         cJSON_Delete(j);
         bool ok = wt_settings_set(&s);
-        /* wt_settings_set() notifies wt_task_main, which rebuilds and pushes
+        /* wt_settings_set() notifies the app_main display-request loop, which rebuilds and pushes
            the display request from the new settings — no need to do it here too. */
         ws_reply(req, ok ? "{\"ack\":\"ok\"}" : "{\"ack\":\"err\",\"msg\":\"nvs write failed\"}");
         return;

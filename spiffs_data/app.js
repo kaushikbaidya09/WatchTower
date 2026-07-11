@@ -27,6 +27,8 @@ const S = {
   displayMode: "time",
   displayValue: 1234,
   displayText: "HELO",
+  bgEffectEn: false,
+  demoEffect: "rainbow_ring",
   conn: {
     state: "pend",
     lastSeen: 0,
@@ -484,8 +486,10 @@ function syncDisplayModeInputs() {
   const mode = fieldStr("dp-mode", null) || S.displayMode || "time";
   const vw = el("dp-value-wrap");
   const tw = el("dp-text-wrap");
+  const ew = el("dp-demo-effect-wrap");
   if (vw) vw.style.display = mode === "number" ? "" : "none";
   if (tw) tw.style.display = mode === "text" ? "" : "none";
+  if (ew) ew.style.display = fieldBool("dp-anim-effect", false) ? "" : "none";
 }
 /* manualDisplayRefresh — sends a ping; the next WS push (≤500 ms) carries fresh display state */
 function manualDisplayRefresh() {
@@ -579,6 +583,8 @@ function onDispChange() {
     .toUpperCase()
     .replace(/[^A-Z0-9 _-]/g, "")
     .slice(0, 4);
+  S.bgEffectEn = fieldBool("dp-anim-effect", false);
+  S.demoEffect = fieldStr("dp-demo-effect", "rainbow_ring");
   updateBrightnessUi(S.brightness, true);
   if (el("dp-value")) el("dp-value").value = String(S.displayValue);
   if (el("dp-text")) el("dp-text").value = S.displayText;
@@ -599,6 +605,8 @@ async function sendDispSettings() {
     display_mode: S.displayMode,
     display_value: S.displayValue,
     display_text: S.displayText,
+    bg_effect_en: S.bgEffectEn,
+    demo_effect: S.demoEffect,
   });
   if (r && r.status === "ok") toast("Display updated", "ok");
 }
@@ -1022,6 +1030,8 @@ function handleWsMessage(d) {
       if (s.display_mode  && !isFocused("dp-mode"))  { S.displayMode  = s.display_mode;          setValueIfIdle("dp-mode",  s.display_mode); }
       if (s.display_value != null && !isFocused("dp-value")) { S.displayValue = s.display_value;  setValueIfIdle("dp-value", String(s.display_value)); }
       if (s.display_text  != null && !isFocused("dp-text"))  { S.displayText  = s.display_text;   setValueIfIdle("dp-text",  s.display_text); }
+      if (s.bg_effect_en  != null && !isFocused("dp-anim-effect")) { S.bgEffectEn = s.bg_effect_en; setCheckedIfIdle("dp-anim-effect", s.bg_effect_en); }
+      if (s.demo_effect   && !isFocused("dp-demo-effect"))   { S.demoEffect   = s.demo_effect;    setValueIfIdle("dp-demo-effect", s.demo_effect); }
       if (s.anim_colon      != null && !isFocused("dp-blink")) { S.blink      = s.anim_colon;      setCheckedIfIdle("dp-blink", s.anim_colon); }
       if (s.anim_scroll     != null && !isFocused("dp-scroll")){ S.scroll     = s.anim_scroll;     setCheckedIfIdle("dp-scroll",s.anim_scroll); }
       if (s.anim_pulse      != null && !isFocused("dp-pulse")) { S.pulse      = s.anim_pulse;      setCheckedIfIdle("dp-pulse", s.anim_pulse); }

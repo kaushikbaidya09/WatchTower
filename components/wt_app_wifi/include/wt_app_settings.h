@@ -28,6 +28,8 @@ typedef struct
     char display_mode[8];
     int16_t display_value;
     char display_text[5];
+    bool bg_effect_en;     ///< Overlay the full-strip demo_effect pattern on top of the current display_mode
+    char demo_effect[16]; ///< Which wt_led_demo_effect_from_name() pattern bg_effect_en plays
 
     /* Time / Clock */
     char timezone[48];

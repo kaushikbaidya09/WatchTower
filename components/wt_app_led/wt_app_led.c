@@ -424,6 +424,39 @@ static void run_effects(int mode)
 }
 
 /*!
+    \brief  Map a demo-effect name (as sent by the web settings UI) to the
+            run_effects() mode integer above. Unknown names fall back to
+            rainbow_ring rather than an unwired slot, since the web UI only
+            ever offers the names in this table.
+ */
+uint8_t wt_led_demo_effect_from_name(const char *name)
+{
+    static const struct
+    {
+        const char *name;
+        uint8_t mode;
+    } k_demo_effects[] = {
+        {"rainbow_ring", 0},
+        {"ripple", 1},
+        {"galaxy", 3},
+        {"xy_flow", 5},
+        {"shockwave", 6},
+    };
+
+    if (name)
+    {
+        for (size_t i = 0; i < sizeof(k_demo_effects) / sizeof(k_demo_effects[0]); i++)
+        {
+            if (strcmp(name, k_demo_effects[i].name) == 0)
+            {
+                return k_demo_effects[i].mode;
+            }
+        }
+    }
+    return 0;
+}
+
+/*!
     \brief  Main WS2812 LED render task.  See wt_app_led.h for full details.
 
     \param[in]  pvParameter  Unused; pass NULL when creating the task.

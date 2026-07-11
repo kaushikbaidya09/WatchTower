@@ -7,8 +7,10 @@
     Core 0:  wt_task_wifi   (WiFi driver + NTP)
              wt_task_web    (HTTP management server)
     Core 1:  wt_task_led    (WS2812 render loop)
-             wt_task_main   (display logic)
              wt_task_sound  (buzzer driver)
+             app_main       (display logic — see below; never returns, so it
+                             doubles as the display-request task instead of
+                             idling once setup is done)
  */
 #include <stdio.h>
 #include <string.h>
@@ -64,7 +66,12 @@ static bool segd_request_equal(const wt_segd_request_t *a, const wt_segd_request
            (a->intensity == b->intensity);
 }
 
-void wt_task_main(void *pvParameters)
+/*!
+    \brief  Display-request loop. Runs forever on the calling task; called
+            from app_main() once setup is complete rather than as its own
+            task, since app_main never returns and would otherwise just idle.
+ */
+static void wt_display_request_loop(void)
 {
     wt_segd_request_t last_req = {0};
     bool has_last_req = false;
@@ -103,6 +110,17 @@ void wt_task_main(void *pvParameters)
         else
         {
             req.mode = WT_SEGD_MODE_TIME;
+        }
+
+        /* Background full-strip animation overlay — independent of
+           display_mode, so toggling it off just falls back to whichever
+           mode (time/number/text) is already selected above. */
+        if (cfg.bg_effect_en)
+        {
+            req.mode = WT_SEGD_MODE_DEMO;
+            req.colon = false;
+            req.colon_blink = false;
+            req.demo_effect = wt_led_demo_effect_from_name(cfg.demo_effect);
         }
 
         bool changed = !has_last_req || !segd_request_equal(&last_req, &req);
@@ -166,7 +184,6 @@ void app_main(void)
 
     /* ---- Core 1 -------------------------------------------------- */
     task_ok &= xTaskCreatePinnedToCore(wt_task_led, "WT_LED", 16384, NULL, 5, NULL, 1);
-    task_ok &= xTaskCreatePinnedToCore(wt_task_main, "WT_MAIN", 4096, NULL, 4, NULL, 1);
     task_ok &= xTaskCreatePinnedToCore(wt_task_sound, "WT_SOUND", 4096, NULL, 4, NULL, 1);
 
     if (task_ok != pdPASS)
@@ -175,8 +192,9 @@ void app_main(void)
         esp_restart();
     }
 
-    while (1)
-    {
-        vTaskDelay(pdMS_TO_TICKS(10000));
-    }
+    /* app_main's own task never returns, so it runs the display-request loop
+       directly instead of spawning a 5th task purely to idle. Its stack size,
+       core affinity, and priority are set via sdkconfig (CONFIG_ESP_MAIN_TASK_*)
+       to match what the dedicated WT_MAIN task used: core 1, priority 4. */
+    wt_display_request_loop();
 }

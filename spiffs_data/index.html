@@ -840,6 +840,14 @@
                       <label class="swl"
                         ><input
                           type="checkbox"
+                          id="dp-anim-effect"
+                          onchange="onDispChange()"
+                        /><span class="swt"><span class="swk"></span></span
+                        ><span>Background Animation</span></label
+                      >
+                      <label class="swl"
+                        ><input
+                          type="checkbox"
                           id="dp-pulse"
                           onchange="onDispChange()"
                         /><span class="swt"><span class="swk"></span></span
@@ -855,6 +863,16 @@
                         ><span>Digit Transitions</span></label
                       >
                     </div>
+                  </div>
+                  <div class="fg" id="dp-demo-effect-wrap">
+                    <label>Animation Pattern</label>
+                    <select id="dp-demo-effect" onchange="onDispChange()">
+                      <option value="rainbow_ring">Rainbow Ring</option>
+                      <option value="ripple">Ripple</option>
+                      <option value="galaxy">Galaxy</option>
+                      <option value="xy_flow">XY Flow</option>
+                      <option value="shockwave">Shockwave</option>
+                    </select>
                   </div>
                   <div class="fg">
                     <label>Reaction</label>

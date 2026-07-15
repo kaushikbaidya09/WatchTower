@@ -1,3 +1,10 @@
+/*!
+    \file   wt_app_time.h
+    \brief  DS3231 RTC driver over I2C.
+
+    \details
+ */
+
 #ifndef WT_APP_TIME_H
 #define WT_APP_TIME_H
 
@@ -18,11 +25,6 @@ typedef struct {
 
 void wt_time_init(void);
 
-/**
- * @brief  Read the current RTC time.
- * @return true if the read succeeded and *time was updated; false on I2C
- *         failure or invalid arguments, in which case *time is left untouched.
- */
 bool wt_time_get_time(wt_time_t *time);
 void wt_time_set_time(const wt_time_t *time);
 

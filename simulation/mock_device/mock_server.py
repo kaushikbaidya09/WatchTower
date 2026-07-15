@@ -9,7 +9,7 @@ device on hand.
 It serves the real spiffs_data/index.html, style.css and app.js untouched,
 and speaks the same WebSocket protocol the firmware does:
   - "hello" once per connection (protocol version, feature list)
-  - "info"  once per connection (chip identity, build info, OTA slot —
+  - "info"  once per connection (chip identity, build info, OTA slot  
             fields that never change without a reboot)
   - "disp"  every 50 ms  (live 7-segment digits, ~20 fps)
   - "full"  every 2 s    (system stats always; wifi/power/settings only on
@@ -20,7 +20,7 @@ Usage:
     python3 simulation/mock_device/mock_server.py [--port 8080] [--host 127.0.0.1]
 
 Then open http://<host>:<port>/ in a browser. The sample data below is
-static/synthetic — edit the *_frame()/INFO functions to try different
+static/synthetic edit the *_frame()/INFO functions to try different
 states (disconnected wifi, low battery, different display modes, etc).
 
 Dev convenience: GET /preset?page=settings&sec=wifi&theme=light seeds
@@ -58,7 +58,7 @@ def send_ws_text(conn, text):
     conn.sendall(header + payload)
 
 
-# Sample "info" — sent once per connection, never repeated (see wt_send_info() in wt_app_web.c)
+# Sample "info" sent once per connection, never repeated (see wt_send_info() in wt_app_web.c)
 INFO = {
     "type": "info",
     "chip_model": "ESP32-S3",
@@ -71,6 +71,8 @@ INFO = {
     "ota_slot": "app0",
     "app0_state": "valid",
     "app1_state": "empty",
+    "min_leds": 58,
+    "max_leds": 100,
     "reset_reason": "power-on",
 }
 
@@ -80,7 +82,7 @@ DIGITS_12_34 = [63, 6, 79, 102]
 
 def full_frame(tick):
     """Sample periodic "full" frame. wifi/power/settings are only populated
-    on tick 0 (first full frame after connect) — everywhere else they are
+    on tick 0 (first full frame after connect) everywhere else they are
     None (-> JSON null), mirroring the firmware's generation-counter gating
     that skips re-sending sub-objects that haven't changed."""
     return {
@@ -150,7 +152,8 @@ def full_frame(tick):
             "display_value": 1234,
             "display_text": "HELO",
             "bg_effect_en": False,
-            "demo_effect": "rainbow_ring",
+            "anim_effect": "rainbow_ring",
+            "led_count": 58,
             "time_format": 24,
             "timezone": "UTC0",
             "ntp_server": "pool.ntp.org",
@@ -174,7 +177,7 @@ def full_frame(tick):
 
 
 def disp_frame(tick):
-    """Sample "disp" frame — the fast (~20fps) display-only tick."""
+    """Sample "disp" frame the fast (~20fps) display-only tick."""
     return {
         "type": "disp",
         "display": {
@@ -275,7 +278,7 @@ def main():
     args = parser.parse_args()
 
     if not os.path.isfile(os.path.join(ROOT, "index.html")):
-        raise SystemExit(f"spiffs_data/index.html not found under {ROOT} — run from a checkout of the repo")
+        raise SystemExit(f"spiffs_data/index.html not found under {ROOT} run from a checkout of the repo")
 
     srv = http.server.ThreadingHTTPServer((args.host, args.port), make_handler(ROOT))
     print(f"WATCH TOWER mock device serving {ROOT}")

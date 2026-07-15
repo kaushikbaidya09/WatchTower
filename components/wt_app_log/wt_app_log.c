@@ -1,26 +1,31 @@
 /*!
     \file   wt_app_log.c
     \brief  In-memory log ring buffer consumed by the web server.
+
+    \details
+    Fixed-size ring buffer guarded by a mutex; oldest entries are
+    overwritten once full.
  */
+
 #include "wt_app_log.h"
 #include <string.h>
 #include <stdio.h>
 
-/* ------------------------------------------------------------------ */
-/*  Internal ring buffer                                              */
-/* ------------------------------------------------------------------ */
-
 typedef struct
 {
     char data[WT_LOG_ENTRY_LEN];
-    uint32_t seq; /*!< Monotonically increasing, never resets */
+    uint32_t seq; ///< Monotonically increasing, never resets
 } log_entry_t;
 
 static log_entry_t s_buf[WT_LOG_BUF_ENTRIES];
-static uint32_t s_write_idx = 0; /*!< Next slot to overwrite */
-static uint32_t s_seq = 0;       /*!< Last assigned sequence  */
+static uint32_t s_write_idx = 0; ///< Next slot to overwrite
+static uint32_t s_seq = 0;       ///< Last assigned sequence
 static SemaphoreHandle_t wt_app_log_mutex = NULL;
 
+/*!
+    \brief  Initialise the ring buffer mutex. Must be called before any
+            task uses wt_log_x(). Safe to call multiple times.
+ */
 void wt_log_init(void)
 {
     if (wt_app_log_mutex == NULL)
@@ -29,6 +34,12 @@ void wt_log_init(void)
     }
 }
 
+/*!
+    \brief  Append a pre-formatted log line to the ring buffer. Called
+            internally by the wt_log_x() macros; may also be used directly
+            for injecting synthetic entries.
+    \param[in]  line  Null-terminated string (truncated to WT_LOG_ENTRY_LEN-1).
+ */
 void wt_log_append(const char *line)
 {
     if (!wt_app_log_mutex || !line)
@@ -44,7 +55,9 @@ void wt_log_append(const char *line)
     }
 }
 
-/* JSON-encode a single character into dst, returns chars written */
+/*!
+    \brief  JSON-encode a single character into dst, returns chars written.
+ */
 static int json_escape_char(char *dst, size_t avail, char c)
 {
     if (avail < 2)
@@ -83,6 +96,16 @@ static int json_escape_char(char *dst, size_t avail, char c)
     return 1;
 }
 
+/*!
+    \brief  Serialise new log entries (seq > from_seq) as a JSON object:
+            { "seq": <uint32>, "entries": [ "<line>", ... ] }
+    \param[in]  from_seq   Sequence number of the last entry the caller has
+                           seen. Pass 0 to receive all buffered entries.
+    \param[out] out_buf    Caller-allocated output buffer.
+    \param[in]  buf_len    Size of out_buf in bytes.
+    \param[out] next_seq   Value to pass as from_seq on the next call.
+    \return                Number of new entries written into out_buf.
+ */
 int wt_log_read_json(uint32_t from_seq, char *out_buf,
                      size_t buf_len, uint32_t *next_seq)
 {

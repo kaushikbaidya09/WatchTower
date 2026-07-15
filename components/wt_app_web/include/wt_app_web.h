@@ -3,6 +3,7 @@
     \brief  HTTP + WebSocket management web server running on the AP/STA
             interfaces.
 
+    \details
     Mounts SPIFFS (/spiffs) and serves a single-page application.  Live
     telemetry and all state-changing device management goes over a single
     WebSocket connection; only static assets and OTA uploads use plain HTTP.
@@ -27,9 +28,9 @@
       - Periodic "full" frames (~1 fps): system info and logs every tick;
         the "wifi"/"power"/"settings" sub-objects are only rebuilt and
         sent when the underlying state actually changed (or a client just
-        connected) — otherwise they are JSON null, meaning "unchanged".
+        connected) otherwise they are JSON null, meaning "unchanged".
 
-    Client → server commands (JSON {"cmd": "...", ...}) — no auth required:
+    Client → server commands (JSON {"cmd": "...", ...}) no auth required:
       ping                                Liveness check → {"ack":"pong"}
       settings                            Update settings (see wt_app_settings.h
                                            fields for accepted keys)
@@ -39,10 +40,10 @@
       wifi {op:"del", index}              Remove profile at index
       wifi {op:"connect", index}          Connect to profile at index
  */
+
 #ifndef WT_APP_WEB_H
 #define WT_APP_WEB_H
 
-/** FreeRTOS task.  Pin to Core 0 alongside the WiFi task. */
 void wt_task_web(void *pvParameters);
 
 #endif /* WT_APP_WEB_H */

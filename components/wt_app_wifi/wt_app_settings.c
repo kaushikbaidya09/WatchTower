@@ -1,7 +1,12 @@
 /*!
     \file   wt_app_settings.c
-    \brief  NVS-backed application settings — expanded for full web console.
+    \brief  NVS-backed application settings expanded for full web console.
+
+    \details
+    Cached settings are kept in RAM and flushed to NVS on change;
+    normalize_settings() derives fields (like .anim) that are not persisted.
  */
+
 #include "wt_app_settings.h"
 #include "wt_app_log.h"
 #include "nvs.h"
@@ -11,10 +16,6 @@
 #include "freertos/task.h"
 #include <string.h>
 #include <stdio.h>
-
-/* ------------------------------------------------------------------ */
-/*  NVS Keys                                                          */
-/* ------------------------------------------------------------------ */
 
 #define WT_NVS_CONFIG "wt_cfg"
 /* display */
@@ -32,7 +33,8 @@
 #define WT_NVSK_DISP_VALUE "disp_value"
 #define WT_NVSK_DISP_TEXT "disp_text"
 #define WT_NVSK_BG_FX_EN "bg_fx_en"
-#define WT_NVSK_DEMO_EFFECT "demo_fx"
+#define WT_NVSK_ANIM_EFFECT "anim_fx"
+#define WT_NVSK_LED_COUNT "led_count"
 /* clock */
 #define WT_NVSK_TIMEZONE "timezone"
 #define WT_NVSK_NTP_SRV "ntp_srv"
@@ -63,11 +65,7 @@
 static wt_settings_t wt_app_setting;
 static SemaphoreHandle_t wt_app_setting_mutex = NULL;
 static TaskHandle_t s_notify_task = NULL;
-static uint32_t s_generation = 0; /*!< Bumped on every successful wt_settings_set(); protected by wt_app_setting_mutex */
-
-/* ------------------------------------------------------------------ */
-/*  NVS Default Application Settings                                  */
-/* ------------------------------------------------------------------ */
+static uint32_t s_generation = 0; ///< Bumped on every successful wt_settings_set(); protected by mutex
 
 static const wt_settings_t wt_app_default_setting = {
     .color_on = {200, 200, 200},
@@ -84,7 +82,8 @@ static const wt_settings_t wt_app_default_setting = {
     .display_value = 1234,
     .display_text = "HELO",
     .bg_effect_en = false,
-    .demo_effect = "rainbow_ring",
+    .anim_effect = "rainbow_ring",
+    .led_count = WT_SEGD_TOTAL_LEDS,
     .timezone = "IST-5:30",
     .ntp_server = "pool.ntp.org",
     .time_format = 24,
@@ -101,6 +100,14 @@ static const wt_settings_t wt_app_default_setting = {
     .ps_wifi = false,
 };
 
+/*!
+    \brief  Parse a "#rrggbb" hex color string into individual components.
+    \param[in]  hex  Hex color string, e.g. "#ff8800".
+    \param[out] r    Parsed red component.
+    \param[out] g    Parsed green component.
+    \param[out] b    Parsed blue component.
+    \return true on success, false if hex is NULL, malformed, or too short.
+ */
 bool wt_settings_parse_hex_color(const char *hex, uint8_t *r, uint8_t *g, uint8_t *b)
 {
     if (!hex || hex[0] != '#' || strlen(hex) < 7)
@@ -110,7 +117,7 @@ bool wt_settings_parse_hex_color(const char *hex, uint8_t *r, uint8_t *g, uint8_
     unsigned rv = 0, gv = 0, bv = 0;
     if (sscanf(hex + 1, "%02x%02x%02x", &rv, &gv, &bv) != 3)
     {
-        APPLOG_E("Failed to parse hex colors!");
+        wt_log_error("Failed to parse hex colors!");
         return false;
     }
     *r = (uint8_t)rv;
@@ -119,12 +126,16 @@ bool wt_settings_parse_hex_color(const char *hex, uint8_t *r, uint8_t *g, uint8_
     return true;
 }
 
+/*!
+    \brief  Load persisted setting fields from NVS into wt_app_setting, leaving
+            fields absent from NVS at their current (default) values.
+ */
 static void load_from_nvs(void)
 {
     nvs_handle_t wt_nvs_h;
     if (nvs_open(WT_NVS_CONFIG, NVS_READONLY, &wt_nvs_h) != ESP_OK)
     {
-        APPLOG_E("Failed to load settings from NVS!");
+        wt_log_error("Failed to load settings from NVS!");
         return;
     }
 
@@ -136,7 +147,7 @@ static void load_from_nvs(void)
     WT_NVS_GET_UINT8(WT_NVSK_COL_ON_G, wt_app_setting.color_on.green)
     WT_NVS_GET_UINT8(WT_NVSK_COL_ON_B, wt_app_setting.color_on.blue)
     WT_NVS_GET_UINT8(WT_NVSK_INTENSITY, wt_app_setting.intensity)
-    /* .anim is not persisted — normalize_settings() always derives it from
+    /* .anim is not persisted normalize_settings() always derives it from
        reaction_effect/anim_pulse below, so a stored value would just be
        overwritten before ever being read. */
     WT_NVS_GET_UINT8(WT_NVSK_COLON_BLK, u8);
@@ -154,7 +165,8 @@ static void load_from_nvs(void)
     WT_NVS_GET_STR(WT_NVSK_DISP_TEXT, wt_app_setting.display_text)
     WT_NVS_GET_UINT8(WT_NVSK_BG_FX_EN, u8);
     wt_app_setting.bg_effect_en = (bool)u8;
-    WT_NVS_GET_STR(WT_NVSK_DEMO_EFFECT, wt_app_setting.demo_effect)
+    WT_NVS_GET_STR(WT_NVSK_ANIM_EFFECT, wt_app_setting.anim_effect)
+    WT_NVS_GET_UINT16(WT_NVSK_LED_COUNT, wt_app_setting.led_count)
     WT_NVS_GET_STR(WT_NVSK_TIMEZONE, wt_app_setting.timezone)
     WT_NVS_GET_STR(WT_NVSK_NTP_SRV, wt_app_setting.ntp_server)
     WT_NVS_GET_UINT8(WT_NVSK_TIME_FMT, wt_app_setting.time_format)
@@ -177,12 +189,15 @@ static void load_from_nvs(void)
     nvs_close(wt_nvs_h);
 }
 
+/*!
+    \brief  Persist all setting fields to NVS and commit.
+ */
 static bool save_to_nvs(const wt_settings_t *s)
 {
     nvs_handle_t wt_nvs_h;
     if (nvs_open(WT_NVS_CONFIG, NVS_READWRITE, &wt_nvs_h) != ESP_OK)
     {
-        APPLOG_E("Failed to open NVS read-write!");
+        wt_log_error("Failed to open NVS read-write!");
         return false;
     }
 
@@ -200,7 +215,8 @@ static bool save_to_nvs(const wt_settings_t *s)
     nvs_set_i16(wt_nvs_h, WT_NVSK_DISP_VALUE, s->display_value);
     nvs_set_str(wt_nvs_h, WT_NVSK_DISP_TEXT, s->display_text);
     nvs_set_u8(wt_nvs_h, WT_NVSK_BG_FX_EN, (uint8_t)s->bg_effect_en);
-    nvs_set_str(wt_nvs_h, WT_NVSK_DEMO_EFFECT, s->demo_effect);
+    nvs_set_str(wt_nvs_h, WT_NVSK_ANIM_EFFECT, s->anim_effect);
+    nvs_set_u16(wt_nvs_h, WT_NVSK_LED_COUNT, s->led_count);
     nvs_set_str(wt_nvs_h, WT_NVSK_TIMEZONE, s->timezone);
     nvs_set_str(wt_nvs_h, WT_NVSK_NTP_SRV, s->ntp_server);
     nvs_set_u8(wt_nvs_h, WT_NVSK_TIME_FMT, s->time_format);
@@ -219,12 +235,16 @@ static bool save_to_nvs(const wt_settings_t *s)
     esp_err_t err = nvs_commit(wt_nvs_h);
     if (err != ESP_OK)
     {
-        APPLOG_E("Failed to commit NVS!");
+        wt_log_error("Failed to commit NVS!");
     }
     nvs_close(wt_nvs_h);
     return (err == ESP_OK);
 }
 
+/*!
+    \brief  Derive computed fields (anim) and clamp/validate user-supplied
+            fields (display_mode, anim_effect, display_value) in place.
+ */
 static void normalize_settings(wt_settings_t *s)
 {
     if (!s)
@@ -265,13 +285,13 @@ static void normalize_settings(wt_settings_t *s)
     }
 
     /* Keep in sync with the run_effects() cases wired up in wt_app_led.c. */
-    if ((strcmp(s->demo_effect, "rainbow_ring") != 0) &&
-        (strcmp(s->demo_effect, "ripple") != 0) &&
-        (strcmp(s->demo_effect, "galaxy") != 0) &&
-        (strcmp(s->demo_effect, "xy_flow") != 0) &&
-        (strcmp(s->demo_effect, "shockwave") != 0))
+    if ((strcmp(s->anim_effect, "rainbow_ring") != 0) &&
+        (strcmp(s->anim_effect, "ripple") != 0) &&
+        (strcmp(s->anim_effect, "galaxy") != 0) &&
+        (strcmp(s->anim_effect, "xy_flow") != 0) &&
+        (strcmp(s->anim_effect, "shockwave") != 0))
     {
-        strlcpy(s->demo_effect, "rainbow_ring", sizeof(s->demo_effect));
+        strlcpy(s->anim_effect, "rainbow_ring", sizeof(s->anim_effect));
     }
 
     if (s->display_value < 0)
@@ -282,8 +302,22 @@ static void normalize_settings(wt_settings_t *s)
     {
         s->display_value = 9999;
     }
+
+    if (s->led_count < WT_SEGD_TOTAL_LEDS)
+    {
+        s->led_count = WT_SEGD_TOTAL_LEDS;
+    }
+    if (s->led_count > WT_SEGD_MAX_TOTAL_LEDS)
+    {
+        s->led_count = WT_SEGD_MAX_TOTAL_LEDS;
+    }
 }
 
+/*!
+    \brief  Initialize the settings module: create the mutex, load persisted
+            values from NVS over the defaults, and apply the derived fields
+            (color, animation, timezone).
+ */
 void wt_settings_init(void)
 {
     wt_app_setting_mutex = xSemaphoreCreateMutex();
@@ -296,10 +330,14 @@ void wt_settings_init(void)
     normalize_settings(&wt_app_setting);
     setenv("TZ", wt_app_setting.timezone, 1);
     tzset();
-    APPLOG_I("Settings loaded (tz=%s fmt=%dh color=%s)",
+    wt_log_info("Settings loaded (tz=%s fmt=%dh color=%s)",
              wt_app_setting.timezone, wt_app_setting.time_format, wt_app_setting.color_hex);
 }
 
+/*!
+    \brief  Get a thread-safe snapshot of the current settings.
+    \return Copy of the current settings.
+ */
 wt_settings_t wt_settings_get(void)
 {
     wt_settings_t snap;
@@ -311,6 +349,12 @@ wt_settings_t wt_settings_get(void)
     return snap;
 }
 
+/*!
+    \brief  Normalize, apply, and persist a new settings snapshot, notifying
+            the registered task (if any) of the change.
+    \param[in]  wt_settings  New settings values to apply.
+    \return true if the settings were successfully persisted to NVS.
+ */
 bool wt_settings_set(const wt_settings_t *wt_settings)
 {
     if (!wt_settings)
@@ -332,7 +376,7 @@ bool wt_settings_set(const wt_settings_t *wt_settings)
     bool status = save_to_nvs(&normalized);
     if (status != true)
     {
-        APPLOG_E("Failed to save settings!");
+        wt_log_error("Failed to save settings!");
     }
 
     if (s_notify_task)
@@ -343,11 +387,21 @@ bool wt_settings_set(const wt_settings_t *wt_settings)
     return status;
 }
 
+/*!
+    \brief  Register a task to be notified (xTaskNotifyGive) whenever settings change.
+    Lets consumers block on ulTaskNotifyTake() instead of polling wt_settings_get().
+    \param[in]  task  Handle of the task to notify on settings change.
+ */
 void wt_settings_register_notify_task(TaskHandle_t task)
 {
     s_notify_task = task;
 }
 
+/*!
+    \brief  Monotonic counter incremented every time wt_settings_set() persists
+    a change. Lets consumers (e.g. the web server) detect "did settings
+    change since I last looked" without diffing the whole struct.
+ */
 uint32_t wt_settings_get_generation(void)
 {
     uint32_t gen;

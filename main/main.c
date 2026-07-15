@@ -2,16 +2,17 @@
     \file   main.c
     \brief  WallTick application entry point.
 
-    Task layout
-    -----------
-    Core 0:  wt_task_wifi   (WiFi driver + NTP)
-             wt_task_web    (HTTP management server)
-    Core 1:  wt_task_led    (WS2812 render loop)
-             wt_task_sound  (buzzer driver)
-             app_main       (display logic — see below; never returns, so it
-                             doubles as the display-request task instead of
-                             idling once setup is done)
+    \details
+    Task layout:
+      Core 0:  wt_task_wifi   (WiFi driver + NTP)
+               wt_task_web    (HTTP management server)
+      Core 1:  wt_task_led    (WS2812 render loop)
+               wt_task_sound  (buzzer driver)
+               app_main       (display logic, see below; never returns, so
+                               it doubles as the display-request task
+                               instead of idling once setup is done)
  */
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -35,10 +36,6 @@
 
 #define WT_MAIN_POLL_MS 1000
 
-/* ------------------------------------------------------------------ */
-/*  Main display task                                                    */
-/* ------------------------------------------------------------------ */
-
 /*!
     \brief  Field-by-field wt_segd_request_t comparison.
 
@@ -52,7 +49,8 @@ static bool segd_request_equal(const wt_segd_request_t *a, const wt_segd_request
            (a->value == b->value) &&
            (strncmp(a->text, b->text, sizeof(a->text)) == 0) &&
            (memcmp(a->raw, b->raw, sizeof(a->raw)) == 0) &&
-           (a->demo_effect == b->demo_effect) &&
+           (a->anim_effect == b->anim_effect) &&
+           (a->led_count == b->led_count) &&
            (a->time_format == b->time_format) &&
            (a->colon == b->colon) &&
            (a->colon_blink == b->colon_blink) &&
@@ -92,6 +90,8 @@ static void wt_display_request_loop(void)
             .color_on = cfg.color_on,
             .color_off = cfg.color_off,
             .intensity = cfg.intensity,
+            .anim_effect = wt_led_anim_effect_from_name(cfg.bg_effect_en ? cfg.anim_effect : NULL),
+            .led_count = cfg.led_count,
         };
 
         if (strcmp(cfg.display_mode, "number") == 0)
@@ -112,17 +112,6 @@ static void wt_display_request_loop(void)
             req.mode = WT_SEGD_MODE_TIME;
         }
 
-        /* Background full-strip animation overlay — independent of
-           display_mode, so toggling it off just falls back to whichever
-           mode (time/number/text) is already selected above. */
-        if (cfg.bg_effect_en)
-        {
-            req.mode = WT_SEGD_MODE_DEMO;
-            req.colon = false;
-            req.colon_blink = false;
-            req.demo_effect = wt_led_demo_effect_from_name(cfg.demo_effect);
-        }
-
         bool changed = !has_last_req || !segd_request_equal(&last_req, &req);
         if (wt_segd_queue && (changed || req.mode == WT_SEGD_MODE_TIME))
         {
@@ -137,10 +126,10 @@ static void wt_display_request_loop(void)
     }
 }
 
-/* ------------------------------------------------------------------ */
-/*  Application entry point                                           */
-/* ------------------------------------------------------------------ */
-
+/*!
+    \brief  Application entry point, called once by the ESP-IDF startup
+            code after the scheduler starts. Never returns.
+ */
 void app_main(void)
 {
     esp_log_level_set("*", ESP_LOG_NONE);
@@ -149,7 +138,7 @@ void app_main(void)
 
     wt_log_init();
 
-    APPLOG_I("========== WATCHTOWER APPLICATION STARTED ==========");
+    wt_log_info("========== WATCHTOWER APPLICATION STARTED ==========");
 
     /* NVS init */
     esp_err_t ret = nvs_flash_init();
@@ -173,7 +162,7 @@ void app_main(void)
     wt_segd_snapshot_init();
     if (!wt_segd_queue || !wt_buzzer_queue)
     {
-        APPLOG_E("Failed to create shared queues — rebooting");
+        wt_log_error("Failed to create shared queues rebooting");
         esp_restart();
     }
 
@@ -188,7 +177,7 @@ void app_main(void)
 
     if (task_ok != pdPASS)
     {
-        APPLOG_E("Failed to create one or more application tasks — rebooting");
+        wt_log_error("Failed to create one or more application tasks rebooting");
         esp_restart();
     }
 

@@ -1,3 +1,12 @@
+/*!
+    \file   wt_app_time.c
+    \brief  DS3231 RTC driver over I2C.
+
+    \details
+    Reads/writes the RTC and syncs the system clock from it at boot
+    (RTC -> system time). NTP sync itself lives in wt_app_wifi.c.
+ */
+
 #include "wt_app_time.h"
 #include "wt_app_log.h"
 #include "driver/i2c_master.h"
@@ -7,9 +16,6 @@
 #include <sys/time.h>
 #include <time.h>
 
-/* ------------------------------------------------------------------ */
-/*  Configuration                                                     */
-/* ------------------------------------------------------------------ */
 #define WT_RTC_I2C_PORT I2C_NUM_0
 #define WT_RTC_SCL_IO 12
 #define WT_RTC_SDA_IO 13
@@ -19,34 +25,29 @@
 #define DS3231_REG_TIME 0x00
 #define RTC_RETRY_COUNT 3
 
-/* ------------------------------------------------------------------ */
-/*  Static Variables                                                  */
-/* ------------------------------------------------------------------ */
 static i2c_master_bus_handle_t s_i2c_bus = NULL;
 static i2c_master_dev_handle_t s_rtc_dev = NULL;
 static SemaphoreHandle_t s_rtc_mutex = NULL;
 
-static void time_sync_notification_cb(struct timeval *tv)
-{
-    APPLOG_I("Time synchronized via SNTP");
-}
-
-/* ------------------------------------------------------------------ */
-/*  BCD Helpers                                                       */
-/* ------------------------------------------------------------------ */
+/*!
+    \brief  Convert a DS3231 BCD register byte to decimal.
+ */
 static int bcd_to_dec(uint8_t val)
 {
     return ((val >> 4) * 10) + (val & 0x0F);
 }
 
+/*!
+    \brief  Convert a decimal value to a DS3231 BCD register byte.
+ */
 static uint8_t dec_to_bcd(int val)
 {
     return ((val / 10) << 4) | (val % 10);
 }
 
-/* ------------------------------------------------------------------ */
-/*  I2C Initialization                                                */
-/* ------------------------------------------------------------------ */
+/*!
+    \brief  Initialize the I2C master bus used to communicate with the DS3231 RTC.
+ */
 static esp_err_t wt_rtc_i2c_init(void)
 {
     if (s_i2c_bus != NULL)
@@ -64,22 +65,23 @@ static esp_err_t wt_rtc_i2c_init(void)
     esp_err_t ret = i2c_new_master_bus(&bus_config, &s_i2c_bus);
 
     if (ret == ESP_OK)
-        APPLOG_I("I2C initialized (SCL=%d SDA=%d)", WT_RTC_SCL_IO, WT_RTC_SDA_IO);
+        wt_log_info("I2C initialized (SCL=%d SDA=%d)", WT_RTC_SCL_IO, WT_RTC_SDA_IO);
     else
-        APPLOG_E("I2C init failed");
+        wt_log_error("I2C init failed");
 
     return ret;
 }
 
-/* ------------------------------------------------------------------ */
-/*  RTC Initialization                                                */
-/* ------------------------------------------------------------------ */
+/*!
+    \brief  Initialize the RTC device: brings up the I2C bus, creates the RTC
+            mutex if needed, and registers the DS3231 device on the I2C bus.
+ */
 void wt_rtc_init(void)
 {
     esp_err_t err = wt_rtc_i2c_init();
     if (err != ESP_OK)
     {
-        APPLOG_E("Failed to initialize I2C");
+        wt_log_error("Failed to initialize I2C");
         return;
     }
 
@@ -88,7 +90,7 @@ void wt_rtc_init(void)
         s_rtc_mutex = xSemaphoreCreateMutex();
         if (s_rtc_mutex == NULL)
         {
-            APPLOG_E("Mutex creation failed");
+            wt_log_error("Mutex creation failed");
             return;
         }
     }
@@ -108,19 +110,20 @@ void wt_rtc_init(void)
 
     if (ret == ESP_OK)
     {
-        APPLOG_I("RTC initialized");
+        wt_log_info("RTC initialized");
     }
     else
     {
-        APPLOG_E("RTC init failed");
+        wt_log_error("RTC init failed");
     }
 
     return;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Validate Time                                                     */
-/* ------------------------------------------------------------------ */
+/*!
+    \brief  Validate that a wt_time_t value's fields are within valid ranges
+            for the DS3231 RTC.
+ */
 static bool wt_rtc_validate_time(const wt_time_t *t)
 {
     if (!t)
@@ -141,9 +144,13 @@ static bool wt_rtc_validate_time(const wt_time_t *t)
     return true;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Get RTC Time                                                      */
-/* ------------------------------------------------------------------ */
+/*!
+    \brief  Read the current RTC time.
+    \param[out]  time  Destination for the time read from the RTC; left
+                        untouched if the read fails.
+    \return true if the read succeeded and *time was updated; false on I2C
+            failure or invalid arguments, in which case *time is left untouched.
+ */
 bool wt_time_get_time(wt_time_t *time)
 {
     if (time == NULL || s_rtc_dev == NULL)
@@ -153,7 +160,7 @@ bool wt_time_get_time(wt_time_t *time)
 
     if (!s_rtc_mutex || xSemaphoreTake(s_rtc_mutex, pdMS_TO_TICKS(50)) != pdTRUE)
     {
-        APPLOG_E("Unable to get s_rtc_mutex");
+        wt_log_error("Unable to get s_rtc_mutex");
         return false;
     }
 
@@ -182,22 +189,23 @@ bool wt_time_get_time(wt_time_t *time)
         time->month = bcd_to_dec(data[5] & 0x1F);
         time->year = 2000 + bcd_to_dec(data[6]);
 
-        APPLOG_I("RTC Time: %02d/%02d/%04d %02d:%02d:%02d",
+        wt_log_info("RTC Time: %02d/%02d/%04d %02d:%02d:%02d",
                  time->day, time->month, time->year,
                  time->hour, time->min, time->sec);
     }
     else
     {
-        APPLOG_E("RTC read failed");
+        wt_log_error("RTC read failed");
     }
 
     xSemaphoreGive(s_rtc_mutex);
     return (ret == ESP_OK);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Set RTC Time                                                      */
-/* ------------------------------------------------------------------ */
+/*!
+    \brief  Write a time value to the RTC, after validating it.
+    \param[in]  time  Time value to program into the RTC.
+ */
 void wt_time_set_time(const wt_time_t *time)
 {
     if (!wt_rtc_validate_time(time) || s_rtc_dev == NULL)
@@ -207,7 +215,7 @@ void wt_time_set_time(const wt_time_t *time)
 
     if (!s_rtc_mutex || xSemaphoreTake(s_rtc_mutex, pdMS_TO_TICKS(50)) != pdTRUE)
     {
-        APPLOG_E("Unable to get s_rtc_mutex");
+        wt_log_error("Unable to get s_rtc_mutex");
         return;
     }
 
@@ -240,31 +248,33 @@ void wt_time_set_time(const wt_time_t *time)
 
     if (ret == ESP_OK)
     {
-        APPLOG_I("Time set successfully");
+        wt_log_info("Time set successfully");
     }
     else
     {
-        APPLOG_E("Failed to set time");
+        wt_log_error("Failed to set time");
     }
 
     xSemaphoreGive(s_rtc_mutex);
 
-    APPLOG_I("RTC Time: %02d/%02d/%04d %02d:%02d:%02d",
+    wt_log_info("RTC Time: %02d/%02d/%04d %02d:%02d:%02d",
              time->day, time->month, time->year,
              time->hour, time->min, time->sec);
 
     return;
 }
 
-/* ------------------------------------------------------------------ */
-/*  RTC -> System Time                                                */
-/* ------------------------------------------------------------------ */
+/*!
+    \brief  Read the RTC and synchronize the system clock from it via
+            settimeofday(), temporarily switching to TZ=UTC0 for the
+            RTC (UTC) -> epoch conversion and restoring the prior TZ after.
+ */
 static void wt_time_set_system(void)
 {
     wt_time_t rtc_time;
     if (!wt_time_get_time(&rtc_time))
     {
-        APPLOG_W("RTC read failed — system time left unset");
+        wt_log_warn("RTC read failed system time left unset");
         return;
     }
 
@@ -298,13 +308,17 @@ static void wt_time_set_system(void)
 
     settimeofday(&tv, NULL);
 
-    APPLOG_I("System time updated from RTC (UTC)");
+    wt_log_info("System time updated from RTC (UTC)");
 
-    APPLOG_I("RTC Time: %02d/%02d/%04d %02d:%02d:%02d",
+    wt_log_info("RTC Time: %02d/%02d/%04d %02d:%02d:%02d",
              rtc_time.day, rtc_time.month, rtc_time.year,
              rtc_time.hour, rtc_time.min, rtc_time.sec);
 }
 
+/*!
+    \brief  Initialize the RTC hardware and synchronize the system clock
+            from it at boot.
+ */
 void wt_time_init(void)
 {
     wt_rtc_init();

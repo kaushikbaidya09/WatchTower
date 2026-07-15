@@ -14,7 +14,7 @@
     --text: #ededf0;
     --line: rgba(255, 255, 255, 0.1);
     --line-strong: rgba(255, 255, 255, 0.22);
-    /* Faint surface tints layered over --card/--panel — badges, ghost inputs,
+    /* Faint surface tints layered over --card/--panel badges, ghost inputs,
      hover/active states, and slider/switch/progress tracks. One place to
      retune elevation for both themes instead of scattered rgba() literals. */
     --surface-1: rgba(255, 255, 255, 0.03);
@@ -1039,7 +1039,7 @@ select {
     background: var(--accent);
 }
 
-/* Thumb is sized to match the track and left invisible — the filled/unfilled
+/* Thumb is sized to match the track and left invisible the filled/unfilled
    edge of the track itself is the handle, so there's no separate knob to see
    or grab, just the bar. */
 .slider::-webkit-slider-thumb {

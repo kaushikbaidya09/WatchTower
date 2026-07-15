@@ -1,3 +1,13 @@
+/*!
+    \file   wt_app_led.c
+    \brief  WS2812 7-segment display render task (RMT driver + effects).
+
+    \details
+    Renders the digit/colon frame plus an always-on background overlay
+    effect (see run_effects()) into a single GRB pixel buffer each frame,
+    then pushes it out over RMT.
+ */
+
 #include "wt_app_led.h"
 #include "wt_seg_display.h"
 #include "wt_app_log.h"
@@ -22,30 +32,26 @@
 #define INTENSITY_SLEW_STEP 4      ///< Max brightness delta applied per frame
 
 QueueHandle_t wt_segd_queue = NULL;                                                      ///< Shared queue
-static uint8_t s_pixels[WT_SEGD_TOTAL_LEDS * 3];                                         ///< Raw GRB byte buffer for all 58 WS2812 LEDs.
+static uint8_t s_pixels[WT_SEGD_MAX_TOTAL_LEDS * 3];                                     ///< Raw GRB byte buffer, sized to the max supported LED count.
 static const uint8_t s_strip_pos_to_bit[WT_SEGD_SEGS_PER_DIGIT] = {6, 5, 0, 1, 2, 3, 4}; ///< Strip position to segment bit mapping.
 static const int s_digit_led_start[WT_SEGD_NUM_DIGITS] = {44, 30, 14, 0};                ///< Visual digit index to first LED index in the physical strip.
 
-/* ------------------------------------------------------------------ */
-/*  WS2812 RMT timing symbols                                         */
-/* ------------------------------------------------------------------ */
-
 static const rmt_symbol_word_t s_ws2812_zero = {
-    /*!< Logical 0: T0H=0.3 µs, T0L=0.9 µs */
+    ///< Logical 0: T0H=0.3 µs, T0L=0.9 µs
     .level0 = 1,
     .duration0 = (uint32_t)(0.3f * RMT_RESOLUTION_HZ / 1000000),
     .level1 = 0,
     .duration1 = (uint32_t)(0.9f * RMT_RESOLUTION_HZ / 1000000),
 };
 static const rmt_symbol_word_t s_ws2812_one = {
-    /*!< Logical 1: T1H=0.9 µs, T1L=0.3 µs */
+    ///< Logical 1: T1H=0.9 µs, T1L=0.3 µs
     .level0 = 1,
     .duration0 = (uint32_t)(0.9f * RMT_RESOLUTION_HZ / 1000000),
     .level1 = 0,
     .duration1 = (uint32_t)(0.3f * RMT_RESOLUTION_HZ / 1000000),
 };
 static const rmt_symbol_word_t s_ws2812_reset = {
-    /*!< Reset pulse: 50 µs low */
+    ///< Reset pulse: 50 µs low
     .level0 = 0,
     .duration0 = RMT_RESOLUTION_HZ / 1000000 * 50 / 2,
     .level1 = 0,
@@ -81,6 +87,9 @@ static size_t encoder_callback(const void *data, size_t data_size, size_t symbol
     return 1;
 }
 
+/*!
+    \brief  Convert an HSV color to RGB.
+ */
 static wt_segd_color_t wt_hsv_to_rgb(int hue, uint8_t sat, uint8_t val)
 {
     wt_segd_color_t color = {0, 0, 0};
@@ -166,6 +175,10 @@ static int get_physical_led_index(int visual_digit, int strip_pos, int led_in_se
     return s_digit_led_start[visual_digit] + strip_pos * WT_SEGD_LEDS_PER_SEG + led_in_seg;
 }
 
+/*!
+    \brief  Resolve the color for one segment given its on/off state and the
+            currently active animation.
+ */
 static wt_segd_color_t wt_segment_color_for(int visual_index, int segment_index, bool on,
                                             const wt_segd_request_t *req, float phase)
 {
@@ -210,7 +223,6 @@ static wt_segd_color_t wt_segment_color_for(int visual_index, int segment_index,
     case WT_SEGD_ANIM_COLOR_FLOW:
     {
         int global_seg = visual_index * WT_SEGD_SEGS_PER_DIGIT + segment_index;
-        float flow_speed = 0.5f;
         float offset = global_seg * 0.4f;
         float p = phase + offset;
         int hue = (int)(p * (360.0f / (2.0f * (float)M_PI))) % 360;
@@ -230,6 +242,10 @@ static wt_segd_color_t wt_segment_color_for(int visual_index, int segment_index,
     return color;
 }
 
+/*!
+    \brief  Resolve the color for the colon LEDs given their on/off state and
+            the currently active animation.
+ */
 static wt_segd_color_t wt_colon_color_for(bool on, const wt_segd_request_t *req, float phase)
 {
     return wt_segment_color_for(0, 0, on, req, phase);
@@ -260,10 +276,6 @@ static void render_digit(int visual_index, uint8_t seg_mask, const wt_segd_reque
 
 /*!
     \brief  Render the colon LEDs (LED 28-29) into the pixel buffer.
-
-    \param[in]  on     True = colon illuminated, false = colon off.
-    \param[in]  req    Current display request (color / animation).
-    \param[in]  phase  Current animation phase in radians.
  */
 static void render_colon(bool on, const wt_segd_request_t *req, float phase, wt_segd_snapshot_t *snapshot)
 {
@@ -277,28 +289,79 @@ static void render_colon(bool on, const wt_segd_request_t *req, float phase, wt_
     wt_set_led_buf(WT_SEGD_COLON_LED_OFFSET + 1, color);
 }
 
-static uint8_t coordsX[WT_SEGD_TOTAL_LEDS] = {
+/* Hand-calibrated physical position/angle data for the fixed 58-LED digit
+   board, used only by the spatial background effects below (never by digit
+   rendering). Any LEDs beyond WT_SEGD_TOTAL_LEDS (an optional extra strip a
+   builder wires up, up to WT_SEGD_MAX_TOTAL_LEDS) have no hand-calibrated
+   data, so build_led_layout() synthesizes a plausible ring layout for them. */
+static const uint8_t k_coordsX_base[WT_SEGD_TOTAL_LEDS] = {
     242, 230, 217, 217, 230, 242, 255, 255, 255, 255, 242, 230, 217, 217, 179, 166, 153, 153, 166, 179,
     191, 191, 191, 191, 179, 166, 153, 153, 128, 128, 89, 77, 64, 64, 77, 89, 102, 102, 102, 102, 89,
     77, 64, 64, 26, 13, 0, 0, 13, 26, 38, 38, 38,
     38, 26, 13, 0, 0};
-static uint8_t coordsY[WT_SEGD_TOTAL_LEDS] = {
+static const uint8_t k_coordsY_base[WT_SEGD_TOTAL_LEDS] = {
     128, 128, 85, 43, 0, 0, 43, 85, 170, 213,
     255, 255, 213, 170, 128, 128, 85, 43, 0,
     0, 43, 85, 170, 213, 255, 255, 213, 170,
     170, 85, 128, 128, 85, 43, 0, 0, 43, 85,
     170, 213, 255, 255, 213, 170, 128, 128,
     85, 43, 0, 0, 43, 85, 170, 213, 255, 255, 213, 170};
-static uint8_t angles[WT_SEGD_TOTAL_LEDS] = {
+static const uint8_t k_angles_base[WT_SEGD_TOTAL_LEDS] = {
     125, 125, 118, 113, 110, 112, 117, 121, 130, 134, 139, 141, 137, 131, 122, 119, 96, 86, 89,
     96, 107, 114, 132, 141, 153, 159, 159, 141, 223, 51, 6, 4, 11, 17, 27, 32, 32, 22, 247, 233, 230, 234, 244, 251, 2, 2, 6, 9, 14, 16, 13, 8, 252, 247, 243, 245, 249, 253};
-static uint8_t radii[WT_SEGD_TOTAL_LEDS] = {201, 178, 158, 165, 196, 217, 232, 227, 225, 227, 209, 187, 158, 154, 84, 60, 50, 69, 102, 117, 122, 112, 107, 112, 102, 84, 50, 37, 17, 37, 84, 107, 135, 143, 135, 117, 84, 69, 60, 69, 102, 122, 135, 130, 201, 225, 251, 255, 239, 217, 187, 181, 178, 181, 209, 232, 251, 248};
+static const uint8_t k_radii_base[WT_SEGD_TOTAL_LEDS] = {201, 178, 158, 165, 196, 217, 232, 227, 225, 227, 209, 187, 158, 154, 84, 60, 50, 69, 102, 117, 122, 112, 107, 112, 102, 84, 50, 37, 17, 37, 84, 107, 135, 143, 135, 117, 84, 69, 60, 69, 102, 122, 135, 130, 201, 225, 251, 255, 239, 217, 187, 181, 178, 181, 209, 232, 251, 248};
+
+/* Runtime layout tables actually read by the effects: indices
+   [0, WT_SEGD_TOTAL_LEDS) are copied verbatim from the k_*_base tables above;
+   indices [WT_SEGD_TOTAL_LEDS, led_count) are synthesized by
+   build_led_layout() for whatever extra LEDs the current led_count adds. */
+static uint8_t coordsX[WT_SEGD_MAX_TOTAL_LEDS];
+static uint8_t coordsY[WT_SEGD_MAX_TOTAL_LEDS];
+static uint8_t angles[WT_SEGD_MAX_TOTAL_LEDS];
+static uint8_t radii[WT_SEGD_MAX_TOTAL_LEDS];
+
+/*!
+    \brief  (Re)builds the runtime layout tables for the currently configured
+            led_count: the fixed 58-LED digit board keeps its hand-calibrated
+            data, and any extra LEDs beyond that are placed evenly around a
+            synthetic outer ring so the spatial effects have something
+            reasonable to animate across.
+ */
+static void build_led_layout(int led_count)
+{
+    if (led_count > WT_SEGD_MAX_TOTAL_LEDS)
+    {
+        led_count = WT_SEGD_MAX_TOTAL_LEDS;
+    }
+
+    int base_count = (led_count < WT_SEGD_TOTAL_LEDS) ? led_count : WT_SEGD_TOTAL_LEDS;
+    memcpy(coordsX, k_coordsX_base, (size_t)base_count);
+    memcpy(coordsY, k_coordsY_base, (size_t)base_count);
+    memcpy(angles, k_angles_base, (size_t)base_count);
+    memcpy(radii, k_radii_base, (size_t)base_count);
+
+    int extra_count = led_count - WT_SEGD_TOTAL_LEDS;
+    for (int i = 0; i < extra_count; i++)
+    {
+        float frac = (float)i / (float)extra_count;
+        float theta = frac * 2.0f * (float)M_PI;
+        uint8_t radius = 220;
+
+        angles[WT_SEGD_TOTAL_LEDS + i] = (uint8_t)(frac * 255.0f);
+        radii[WT_SEGD_TOTAL_LEDS + i] = radius;
+        coordsX[WT_SEGD_TOTAL_LEDS + i] = (uint8_t)(128.0f + 100.0f * cosf(theta));
+        coordsY[WT_SEGD_TOTAL_LEDS + i] = (uint8_t)(128.0f + 100.0f * sinf(theta));
+    }
+}
 
 static int t_rain = 0;
 
-static void effect_rainbow_ring(void)
+/*!
+    \brief  Rainbow-ring background overlay effect.
+ */
+static void effect_rainbow_ring(int led_count)
 {
-    for (int i = 0; i < WT_SEGD_TOTAL_LEDS; i++)
+    for (int i = 0; i < led_count; i++)
     {
         int hue = angles[i] * 2 + t_rain;
 
@@ -315,9 +378,12 @@ static void effect_rainbow_ring(void)
 
 static int t_ripple = 0;
 
-static void effect_ripple(void)
+/*!
+    \brief  Ripple background overlay effect.
+ */
+static void effect_ripple(int led_count)
 {
-    for (int i = 0; i < WT_SEGD_TOTAL_LEDS; i++)
+    for (int i = 0; i < led_count; i++)
     {
         int wave = (sin((radii[i] + t_ripple) * 0.08) + 1.0) * 127;
 
@@ -326,7 +392,7 @@ static void effect_ripple(void)
     }
 
     /* t_ripple feeds a sin() argument with a non-integer period, so it can't
-       wrap seamlessly at a small bound — reset it at a large bound instead,
+       wrap seamlessly at a small bound reset it at a large bound instead,
        just to keep it defined (see t_rain's comment for why this matters). */
     t_ripple += 3;
     if (t_ripple >= 1000000000)
@@ -335,9 +401,12 @@ static void effect_ripple(void)
 
 static int t_galaxy = 0;
 
-static void effect_galaxy(void)
+/*!
+    \brief  Galaxy background overlay effect.
+ */
+static void effect_galaxy(int led_count)
 {
-    for (int i = 0; i < WT_SEGD_TOTAL_LEDS; i++)
+    for (int i = 0; i < led_count; i++)
     {
         int hue = angles[i] * 4 + t_galaxy;
 
@@ -356,9 +425,12 @@ static void effect_galaxy(void)
 
 static int t_flow = 0;
 
-static void effect_xy_flow(void)
+/*!
+    \brief  XY-flow background overlay effect.
+ */
+static void effect_xy_flow(int led_count)
 {
-    for (int i = 0; i < WT_SEGD_TOTAL_LEDS; i++)
+    for (int i = 0; i < led_count; i++)
     {
         int hue =
             coordsX[i] +
@@ -376,9 +448,12 @@ static void effect_xy_flow(void)
 
 static int t_wave = 0;
 
-static void effect_shockwave(void)
+/*!
+    \brief  Shockwave background overlay effect.
+ */
+static void effect_shockwave(int led_count)
 {
-    for (int i = 0; i < WT_SEGD_TOTAL_LEDS; i++)
+    for (int i = 0; i < led_count; i++)
     {
         int dist = abs(radii[i] - t_wave);
 
@@ -394,29 +469,45 @@ static void effect_shockwave(void)
 }
 
 /*!
-    \brief  Render a full-strip demo/test pattern, overwriting every LED.
-
-    Only invoked for WT_SEGD_MODE_DEMO requests (see wt_task_led) — never
-    runs during normal TIME/NUMBER/TEXT/RAW display operation.
+    \brief  No-op background effect leaves the digit/colon render from this
+            frame untouched. This is the default pattern (see
+            wt_led_anim_effect_from_name) so that run_effects() can run
+            unconditionally every frame without a background overlay
+            appearing until one is explicitly selected.
  */
-static void run_effects(int mode)
+static void effect_solid(void)
+{
+}
+
+/*!
+    \brief  Render the selected background overlay pattern on top of the
+            digit/colon render, overwriting whichever LEDs the pattern
+            touches. Runs every frame regardless of display mode; mode 2
+            (solid) is a no-op so it never touches the buffer.
+    \param[in]  mode       Effect pattern index (see wt_led_anim_effect_from_name()).
+    \param[in]  led_count  Number of LEDs to animate (see wt_segd_request_t.led_count).
+ */
+static void run_effects(int mode, int led_count)
 {
     switch (mode)
     {
     case 0:
-        effect_rainbow_ring();
+        effect_rainbow_ring(led_count);
         break;
     case 1:
-        effect_ripple();
+        effect_ripple(led_count);
+        break;
+    case 2:
+        effect_solid();
         break;
     case 3:
-        effect_galaxy();
+        effect_galaxy(led_count);
         break;
     case 5:
-        effect_xy_flow();
+        effect_xy_flow(led_count);
         break;
     case 6:
-        effect_shockwave();
+        effect_shockwave(led_count);
         break;
     default:
         break;
@@ -424,20 +515,22 @@ static void run_effects(int mode)
 }
 
 /*!
-    \brief  Map a demo-effect name (as sent by the web settings UI) to the
-            run_effects() mode integer above. Unknown names fall back to
-            rainbow_ring rather than an unwired slot, since the web UI only
-            ever offers the names in this table.
+    \brief  Map an anim-effect name (e.g. "ripple") to the run_effects() mode
+            integer used in wt_segd_request_t.anim_effect. Unknown/NULL
+            names return the solid (no animation) mode (2).
+    \param[in]  name  Anim effect name; NULL is treated as unknown.
+    \return Mode integer for run_effects().
  */
-uint8_t wt_led_demo_effect_from_name(const char *name)
+uint8_t wt_led_anim_effect_from_name(const char *name)
 {
     static const struct
     {
         const char *name;
         uint8_t mode;
-    } k_demo_effects[] = {
+    } k_anim_effects[] = {
         {"rainbow_ring", 0},
         {"ripple", 1},
+        {"solid", 2},
         {"galaxy", 3},
         {"xy_flow", 5},
         {"shockwave", 6},
@@ -445,15 +538,15 @@ uint8_t wt_led_demo_effect_from_name(const char *name)
 
     if (name)
     {
-        for (size_t i = 0; i < sizeof(k_demo_effects) / sizeof(k_demo_effects[0]); i++)
+        for (size_t i = 0; i < sizeof(k_anim_effects) / sizeof(k_anim_effects[0]); i++)
         {
-            if (strcmp(name, k_demo_effects[i].name) == 0)
+            if (strcmp(name, k_anim_effects[i].name) == 0)
             {
-                return k_demo_effects[i].mode;
+                return k_anim_effects[i].mode;
             }
         }
     }
-    return 0;
+    return 2;
 }
 
 /*!
@@ -463,11 +556,11 @@ uint8_t wt_led_demo_effect_from_name(const char *name)
  */
 void wt_task_led(void *pvParameter)
 {
-    // APPLOG_I("---------- LED TASK STARTED ----------");
+    // wt_log_info("---------- LED TASK STARTED ----------");
 
     if (!wt_segd_queue)
     {
-        APPLOG_E("wt_segd_queue not created before wt_task_led started");
+        wt_log_error("wt_segd_queue not created before wt_task_led started");
         vTaskDelete(NULL);
         return;
     }
@@ -496,21 +589,25 @@ void wt_task_led(void *pvParameter)
         .value = 0,
         .colon = true,
         .colon_blink = false,
-        .anim = WT_SEGD_ANIM_SOLID,
+        .anim = WT_SEGD_ANIM_COLOR_FLOW,
         .color_on = WT_SEGD_GREEN,
         .color_off = WT_SEGD_DIM,
-        .intensity = 200,
+        .intensity = 255,
+        .led_count = WT_SEGD_TOTAL_LEDS,
     };
     wt_segd_request_t target = current;
 
     wt_segd_frame_t frame = {0};
     wt_segd_prepare_frame(&current, &frame);
 
+    int applied_led_count = current.led_count;
+    build_led_layout(applied_led_count);
+
     float pulse_phase = 0.0f;   ///< Phase accumulator for PULSE animation
     float rainbow_phase = 0.0f; ///< Phase accumulator for RAINBOW / WAVE animation
     uint32_t tick = 0;          ///< Frame counter used for colon blink timing
 
-    APPLOG_I("Render loop started (58 LEDs: D1@0 D2@14 colon@28 D3@30 D4@44)");
+    wt_log_info("Render loop started (%d LEDs: D1@0 D2@14 colon@28 D3@30 D4@44)", applied_led_count);
 
     TickType_t last_wake = xTaskGetTickCount();
 
@@ -523,7 +620,13 @@ void wt_task_led(void *pvParameter)
             uint8_t keep_intensity = current.intensity;
             current = new_req;
             current.intensity = keep_intensity;
-            // APPLOG_I("Request: mode=%d value=%d", current.mode, current.value);
+            // wt_log_info("Request: mode=%d value=%d", current.mode, current.value);
+
+            if (current.led_count != applied_led_count)
+            {
+                build_led_layout(current.led_count);
+                applied_led_count = current.led_count;
+            }
         }
 
         if (current.intensity < target.intensity)
@@ -563,27 +666,25 @@ void wt_task_led(void *pvParameter)
         render_colon(colon_on, &current, phase, &snapshot);
         wt_segd_snapshot_set(&snapshot);
 
-        /* Demo/test effect pattern — only overwrites the strip when a demo
-           request is explicitly queued; never runs during normal display. */
-        if (current.mode == WT_SEGD_MODE_DEMO)
-        {
-            run_effects(current.demo_effect);
-        }
+        /* Background overlay pattern, runs every frame. Mode 2 (solid) is a
+           no-op, so the digit/colon render above stays untouched until a
+           real pattern is selected. */
+        run_effects(current.anim_effect, applied_led_count);
 
         /* Transmit pixel buffer over RMT.  A transient RMT error skips this
            frame and logs rather than rebooting the device. */
         esp_err_t tx_err = rmt_transmit(led_chan, rtm_encoder_h,
-                                        s_pixels, sizeof(s_pixels), &tx_config);
+                                        s_pixels, (size_t)applied_led_count * 3, &tx_config);
         if (tx_err != ESP_OK)
         {
-            APPLOG_W("rmt_transmit failed: %s — skipping frame", esp_err_to_name(tx_err));
+            wt_log_warn("rmt_transmit failed: %s skipping frame", esp_err_to_name(tx_err));
         }
         else
         {
             esp_err_t wait_err = rmt_tx_wait_all_done(led_chan, pdMS_TO_TICKS(RMT_WAIT_TIMEOUT_MS));
             if (wait_err != ESP_OK)
             {
-                APPLOG_W("rmt_tx_wait_all_done failed: %s — skipping frame", esp_err_to_name(wait_err));
+                wt_log_warn("rmt_tx_wait_all_done failed: %s skipping frame", esp_err_to_name(wait_err));
             }
         }
 

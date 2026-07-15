@@ -932,15 +932,28 @@
                                                 >
                                             </div>
                                         </div>
-                                        <div class="fg" id="dp-demo-effect-wrap">
+                                        <div class="fg" id="dp-anim-fx-wrap">
                                             <label>Animation Pattern</label>
-                                            <select id="dp-demo-effect" onchange="onDispChange()">
+                                            <select id="dp-anim-fx" onchange="onDispChange()">
                                                 <option value="rainbow_ring">Rainbow Ring</option>
                                                 <option value="ripple">Ripple</option>
                                                 <option value="galaxy">Galaxy</option>
                                                 <option value="xy_flow">XY Flow</option>
                                                 <option value="shockwave">Shockwave</option>
                                             </select>
+                                        </div>
+                                        <div class="fg">
+                                            <label>LED Count</label>
+                                            <input
+                                                type="number"
+                                                id="dp-led-count"
+                                                min="58"
+                                                max="100"
+                                                step="1"
+                                                value="58"
+                                                onchange="onDispChange()"
+                                            />
+                                            <small id="dp-led-count-hint">58-100 LEDs</small>
                                         </div>
                                         <div class="fg">
                                             <label>Reaction</label>

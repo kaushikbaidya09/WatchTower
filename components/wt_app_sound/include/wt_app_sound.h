@@ -1,3 +1,10 @@
+/*!
+    \file   wt_app_sound.h
+    \brief  Buzzer sound-event API.
+
+    \details
+ */
+
 #ifndef WT_APP_SOUND_H
 #define WT_APP_SOUND_H
 

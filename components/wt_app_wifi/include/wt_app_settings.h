@@ -1,8 +1,11 @@
 /*!
     \file   wt_app_settings.h
     \brief  Persistent application settings stored in NVS.
+
+    \details
     All access is thread-safe via an internal mutex.
  */
+
 #ifndef WT_APP_SETTINGS_H
 #define WT_APP_SETTINGS_H
 
@@ -28,8 +31,9 @@ typedef struct
     char display_mode[8];
     int16_t display_value;
     char display_text[5];
-    bool bg_effect_en;     ///< Overlay the full-strip demo_effect pattern on top of the current display_mode
-    char demo_effect[16]; ///< Which wt_led_demo_effect_from_name() pattern bg_effect_en plays
+    bool bg_effect_en;     ///< Overlay the full-strip anim_effect pattern on top of the current display_mode
+    char anim_effect[16]; ///< Which wt_led_anim_effect_from_name() pattern bg_effect_en plays
+    uint16_t led_count;    ///< Physical LED count to drive; clamped to [WT_SEGD_TOTAL_LEDS, WT_SEGD_MAX_TOTAL_LEDS]
 
     /* Time / Clock */
     char timezone[48];
@@ -56,17 +60,8 @@ wt_settings_t wt_settings_get(void);
 bool wt_settings_set(const wt_settings_t *s);
 bool wt_settings_parse_hex_color(const char *hex, uint8_t *r, uint8_t *g, uint8_t *b);
 
-/**
- * @brief  Register a task to be notified (xTaskNotifyGive) whenever settings change.
- *         Lets consumers block on ulTaskNotifyTake() instead of polling wt_settings_get().
- */
 void wt_settings_register_notify_task(TaskHandle_t task);
 
-/**
- * @brief  Monotonic counter incremented every time wt_settings_set() persists
- *         a change. Lets consumers (e.g. the web server) detect "did settings
- *         change since I last looked" without diffing the whole struct.
- */
 uint32_t wt_settings_get_generation(void);
 
 #endif /* WT_APP_SETTINGS_H */

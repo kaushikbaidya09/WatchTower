@@ -1,3 +1,13 @@
+/*!
+    \file   wt_seg_display.c
+    \brief  7-segment character encoding and display-request framing.
+
+    \details
+    Converts a wt_segd_request_t (mode/value/text/raw) into the per-digit
+    segment masks the LED render task consumes, and holds the latest
+    rendered snapshot for the web server to read back.
+ */
+
 #include "wt_seg_display.h"
 #include <string.h>
 #include <time.h>
@@ -169,6 +179,9 @@ static bool s_snapshot_valid = false;
 
 /*!
     \brief  Return the segment bitmask for a single ASCII character.
+    \param[in]  ch  Character to encode (digit, letter, or symbol); unrecognized
+                    characters map to a blank (space) display.
+    \return Segment bitmask (see WT_SEGD_A..WT_SEGD_G).
  */
 uint8_t wt_segd_char(char ch)
 {
@@ -207,6 +220,8 @@ uint8_t wt_segd_char(char ch)
 
 /*!
     \brief  Convert a wt_segd_request_t into a wt_segd_frame_t.
+    \param[in]  req    Display request to render.
+    \param[out] frame  Resulting per-digit segment masks and colon state.
  */
 void wt_segd_prepare_frame(const wt_segd_request_t *req, wt_segd_frame_t *frame)
 {
@@ -262,7 +277,6 @@ void wt_segd_prepare_frame(const wt_segd_request_t *req, wt_segd_frame_t *frame)
         }
         break;
 
-    case WT_SEGD_MODE_DEMO:
     default:
         for (int i = 0; i < WT_SEGD_NUM_DIGITS; i++)
         {
@@ -274,6 +288,9 @@ void wt_segd_prepare_frame(const wt_segd_request_t *req, wt_segd_frame_t *frame)
     frame->colon = req->colon;
 }
 
+/*!
+    \brief  Lazily create the mutex guarding the shared render snapshot.
+ */
 void wt_segd_snapshot_init(void)
 {
     if (!s_snapshot_mutex)
@@ -282,6 +299,11 @@ void wt_segd_snapshot_init(void)
     }
 }
 
+/*!
+    \brief  Publish the latest rendered frame snapshot for readers (e.g. the
+            web server) to consume.
+    \param[in]  snapshot  Snapshot to store; no-op if NULL or uninitialized.
+ */
 void wt_segd_snapshot_set(const wt_segd_snapshot_t *snapshot)
 {
     if (!snapshot || !s_snapshot_mutex)
@@ -295,6 +317,11 @@ void wt_segd_snapshot_set(const wt_segd_snapshot_t *snapshot)
     xSemaphoreGive(s_snapshot_mutex);
 }
 
+/*!
+    \brief  Retrieve the most recently published render snapshot.
+    \param[out] snapshot  Filled with the latest snapshot if one is available.
+    \return true if a valid snapshot was copied out, false otherwise.
+ */
 bool wt_segd_snapshot_get(wt_segd_snapshot_t *snapshot)
 {
     if (!snapshot || !s_snapshot_mutex)

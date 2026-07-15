@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════
-   WATCH TOWER — Device Console · app.js
+   WATCH TOWER Device Console · app.js
    All settings auto-save on change (debounced)
    ═══════════════════════════════════════════ */
 'use strict';
@@ -8,7 +8,7 @@
 const WS_RETRY_MIN_MS = 1000;
 const WS_RETRY_MAX_MS = 8000;
 /* No message (display frames arrive every 50 ms while connected) for this
-   long means the socket is dead even if the browser hasn't noticed yet —
+   long means the socket is dead even if the browser hasn't noticed yet  
    force a close so the reconnect path in initWebSocket() kicks in. */
 const WS_WATCHDOG_MS = 5000;
 const S = {
@@ -28,7 +28,10 @@ const S = {
     displayValue: 1234,
     displayText: 'HELO',
     bgEffectEn: false,
-    demoEffect: 'rainbow_ring',
+    animEffect: 'rainbow_ring',
+    ledCount: 58,
+    minLeds: 58,
+    maxLeds: 100,
     conn: {
         state: 'pend',
         lastSeen: 0,
@@ -49,7 +52,7 @@ function debounce(key, fn, ms) {
     _db[key] = setTimeout(fn, ms || 500);
 }
 /* All data I/O goes through the WebSocket (wsSend / handleWsMessage).
-   apiGet / apiPost have been removed — the only HTTP requests left are
+   apiGet / apiPost have been removed the only HTTP requests left are
    the two OTA binary uploads which use XHR directly in doUpload(). */
 
 function el(id) {
@@ -73,7 +76,7 @@ function setCheckedIfIdle(id, value) {
     node.checked = !!value;
 }
 /* Read a form field back out, falling back to dflt when the element is
-   missing — the read-side counterpart of setValueIfIdle/setCheckedIfIdle,
+   missing the read-side counterpart of setValueIfIdle/setCheckedIfIdle,
    used when building the object sent to the device. */
 function fieldStr(id, dflt) {
     const node = el(id);
@@ -138,7 +141,7 @@ function toast(msg, type, ms) {
 }
 
 /* ═══════════════════════════════════════════
-   7-SEGMENT RENDERER — device-backed masks
+   7-SEGMENT RENDERER device-backed masks
 ═══════════════════════════════════════════ */
 const SEG_BIT = { A: 1 << 0, B: 1 << 1, C: 1 << 2, D: 1 << 3, E: 1 << 4, F: 1 << 5, G: 1 << 6 };
 const MASK_TO_CHAR = {
@@ -332,7 +335,7 @@ function requestRender() {
 }
 
 /* ═════ PAGE / SECTION NAV ════════════════ */
-/* Shared by showPage()/showSec() below — both swap which panel/nav-button
+/* Shared by showPage()/showSec() below both swap which panel/nav-button
    pair is "active" and remember the choice, differing only in which
    selectors/prefixes/storage key they use. */
 function activateTab(opts) {
@@ -458,7 +461,7 @@ function applyFmtUi(n) {
     if (b12) b12.classList.toggle('active', n === 12);
 }
 
-/* updateDispInfo / syncDisplayModeInputs — pure UI helpers, kept */
+/* updateDispInfo / syncDisplayModeInputs pure UI helpers, kept */
 function updateDispInfo() {
     const st = S.display;
     setText('dinfo-fmt', st && st.mode ? st.mode.toUpperCase() : S.displayMode.toUpperCase());
@@ -477,12 +480,12 @@ function syncDisplayModeInputs() {
     const mode = fieldStr('dp-mode', null) || S.displayMode || 'time';
     const vw = el('dp-value-wrap');
     const tw = el('dp-text-wrap');
-    const ew = el('dp-demo-effect-wrap');
+    const ew = el('dp-anim-fx-wrap');
     if (vw) vw.style.display = mode === 'number' ? '' : 'none';
     if (tw) tw.style.display = mode === 'text' ? '' : 'none';
     if (ew) ew.style.display = fieldBool('dp-anim-effect', false) ? '' : 'none';
 }
-/* manualDisplayRefresh — sends a ping; the next WS push (≤500 ms) carries fresh display state */
+/* manualDisplayRefresh sends a ping; the next WS push (≤500 ms) carries fresh display state */
 function manualDisplayRefresh() {
     wsSend('ping', {});
     toast('Refreshing…', 'info', 800);
@@ -574,7 +577,9 @@ function onDispChange() {
         .replace(/[^A-Z0-9 _-]/g, '')
         .slice(0, 4);
     S.bgEffectEn = fieldBool('dp-anim-effect', false);
-    S.demoEffect = fieldStr('dp-demo-effect', 'rainbow_ring');
+    S.animEffect = fieldStr('dp-anim-fx', 'rainbow_ring');
+    S.ledCount = clamp(fieldNum('dp-led-count', S.ledCount) || S.ledCount, S.minLeds, S.maxLeds);
+    if (el('dp-led-count')) el('dp-led-count').value = String(S.ledCount);
     updateBrightnessUi(S.brightness, true);
     if (el('dp-value')) el('dp-value').value = String(S.displayValue);
     if (el('dp-text')) el('dp-text').value = S.displayText;
@@ -596,7 +601,8 @@ async function sendDispSettings() {
         display_value: S.displayValue,
         display_text: S.displayText,
         bg_effect_en: S.bgEffectEn,
-        demo_effect: S.demoEffect,
+        anim_effect: S.animEffect,
+        led_count: S.ledCount,
     });
     if (r && r.status === 'ok') toast('Display updated', 'ok');
 }
@@ -870,7 +876,7 @@ function handleWsMessage(d) {
         return;
     }
 
-    /* ── One-time boot-constant info (type:"info") — chip identity, build
+    /* ── One-time boot-constant info (type:"info") chip identity, build
         info, OTA slot, reset reason. Never repeats, so these DOM targets
         are only ever touched once per connection instead of every "full"
         tick. ──────────────────────────────────────────────────────── */
@@ -889,6 +895,14 @@ function handleWsMessage(d) {
         if (d.ota_slot) setText('fw-slot', d.ota_slot);
         if (d.app0_state) setText('fw-app0', d.app0_state);
         if (d.app1_state) setText('fw-app1', d.app1_state);
+        if (d.min_leds != null) S.minLeds = d.min_leds;
+        if (d.max_leds != null) S.maxLeds = d.max_leds;
+        const ledCountInput = el('dp-led-count');
+        if (ledCountInput) {
+            ledCountInput.min = String(S.minLeds);
+            ledCountInput.max = String(S.maxLeds);
+        }
+        setText('dp-led-count-hint', S.minLeds + '-' + S.maxLeds + ' LEDs');
         return;
     }
 
@@ -906,7 +920,7 @@ function handleWsMessage(d) {
         }
         return;
     }
-    /* ── Full-state frame (type:"full", 1 fps) — fall through ─────── */
+    /* ── Full-state frame (type:"full", 1 fps) fall through ─────── */
     if (d.uptime_s != null) {
         setText('d-uptime', fmtUptime(d.uptime_s));
         setText('i-uptime', fmtUptime(d.uptime_s));
@@ -1015,7 +1029,7 @@ function handleWsMessage(d) {
     if (d.settings) {
         const s = d.settings;
 
-        /* Display group — skip entirely if user is mid-edit */
+        /* Display group skip entirely if user is mid-edit */
         if (!_db.disp) {
             if (s.color && !isFocused('dp-color')) {
                 S.color = s.color;
@@ -1041,9 +1055,13 @@ function handleWsMessage(d) {
                 S.bgEffectEn = s.bg_effect_en;
                 setCheckedIfIdle('dp-anim-effect', s.bg_effect_en);
             }
-            if (s.demo_effect && !isFocused('dp-demo-effect')) {
-                S.demoEffect = s.demo_effect;
-                setValueIfIdle('dp-demo-effect', s.demo_effect);
+            if (s.anim_effect && !isFocused('dp-anim-fx')) {
+                S.animEffect = s.anim_effect;
+                setValueIfIdle('dp-anim-fx', s.anim_effect);
+            }
+            if (s.led_count != null && !isFocused('dp-led-count')) {
+                S.ledCount = s.led_count;
+                setValueIfIdle('dp-led-count', String(s.led_count));
             }
             if (s.anim_colon != null && !isFocused('dp-blink')) {
                 S.blink = s.anim_colon;
@@ -1066,7 +1084,7 @@ function handleWsMessage(d) {
             syncDisplayModeInputs();
         }
 
-        /* Clock group — skip entirely if user is mid-edit */
+        /* Clock group skip entirely if user is mid-edit */
         if (!_db.clock) {
             if (s.time_format) applyFmtUi(s.time_format);
             if (s.timezone) setValueIfIdle('tz-sel', s.timezone);
@@ -1079,7 +1097,7 @@ function handleWsMessage(d) {
             if (s.alarm2_en != null) setCheckedIfIdle('al2-en', s.alarm2_en);
         }
 
-        /* Power group — skip entirely if user is mid-edit */
+        /* Power group skip entirely if user is mid-edit */
         if (!_db.power) {
             if (s.ps_dim != null) setCheckedIfIdle('ps-dim', s.ps_dim);
             if (s.ps_wifi != null) setCheckedIfIdle('ps-wifi', s.ps_wifi);
@@ -1089,7 +1107,7 @@ function handleWsMessage(d) {
         }
     }
 
-    /* ── Incremental log entries — device tracks the seq cursor itself and
+    /* ── Incremental log entries device tracks the seq cursor itself and
         only ever sends entries newer than what it last broadcast, so the
         client just appends whatever arrives. ──────────────────────── */
     if (d.logs?.entries?.length) {
@@ -1108,13 +1126,13 @@ function clearWsWatchdog() {
     }
 }
 /* Rearmed on every inbound message. If it ever fires, the socket has gone
-   quiet without telling the browser (e.g. a half-open TCP connection) —
+   quiet without telling the browser (e.g. a half-open TCP connection)  
    force a close so the normal onclose → reconnect path takes over instead
    of the UI sitting on stale data indefinitely. */
 function armWsWatchdog() {
     clearWsWatchdog();
     S.wsWatchdog = setTimeout(function () {
-        console.warn('WS watchdog: no data for ' + WS_WATCHDOG_MS + 'ms — forcing reconnect');
+        console.warn('WS watchdog: no data for ' + WS_WATCHDOG_MS + 'ms forcing reconnect');
         if (S.ws) {
             try {
                 S.ws.close();
@@ -1177,7 +1195,7 @@ function initWebSocket() {
         S.ws = null;
         clearWsWatchdog();
         markConnectionLost();
-        console.info('WS closed — retrying in', S.wsRetryMs, 'ms');
+        console.info('WS closed retrying in', S.wsRetryMs, 'ms');
         scheduleReconnect();
     };
 }

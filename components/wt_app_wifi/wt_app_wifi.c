@@ -1,7 +1,12 @@
 /*!
     \file   wt_app_wifi.c
     \brief  WiFi AP+STA driver with dynamic NVS-backed profile management.
+
+    \details
+    Rotates through saved profiles with a bounded retry count per profile,
+    reconnecting automatically on disconnect.
  */
+
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -33,24 +38,15 @@
 #define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA2_PSK
 #endif
 
-/* ------------------------------------------------------------------ */
-/*  AP configuration (static)                                           */
-/* ------------------------------------------------------------------ */
 #define WT_WIFI_AP_SSID "WatchTower"
-#define WT_WIFI_AP_PASSWORD "watch@360" /*!< WPA2-PSK, must be 8-63 chars */
+#define WT_WIFI_AP_PASSWORD "watch@360" ///< WPA2-PSK, must be 8-63 chars
 #define WT_WIFI_AP_CHANNEL 6
 #define WT_WIFI_AP_MAX_CONN 4
 #define WT_WIFI_AP_IP "192.168.4.1"
 
-/* ------------------------------------------------------------------ */
-/*  STA retry policy                                                     */
-/* ------------------------------------------------------------------ */
 #define WT_WIFI_STA_RETRY 1
 #define WT_WIFI_STA_RETRY_WAIT_MS 10000
 
-/* ------------------------------------------------------------------ */
-/*  NVS keys                                                             */
-/* ------------------------------------------------------------------ */
 #define WT_NVS_NS "wt_wifi"
 #define WT_NVS_KEY_CNT "prof_cnt"
 #define WT_NVS_KEY_SSID "ssid_%d"
@@ -59,16 +55,13 @@
 /* DHCP server DNS option */
 #define WT_WIFI_DHCPS_OFFER_DNS 0x02
 
-/* ------------------------------------------------------------------ */
-/*  Module state                                                         */
-/* ------------------------------------------------------------------ */
 static SemaphoreHandle_t s_mutex = NULL;
 static wt_wifi_profile_t s_profiles[WT_WIFI_MAX_PROFILES];
 static int s_profile_cnt = 0;
 static int s_active_profile = 0;
 
-static wt_wifi_status_t s_status; /*!< Protected by s_mutex */
-static uint32_t s_generation = 0; /*!< Bumped on any UI-relevant state change; protected by s_mutex */
+static wt_wifi_status_t s_status; ///< Protected by s_mutex
+static uint32_t s_generation = 0; ///< Bumped on state change; protected by s_mutex
 
 static wifi_config_t s_ap_cfg;
 static wifi_config_t s_sta_cfg;
@@ -76,28 +69,28 @@ static esp_netif_t *s_netif_ap = NULL;
 static esp_netif_t *s_netif_sta = NULL;
 
 static int s_retry_count = WT_WIFI_STA_RETRY;
-static TaskHandle_t s_wifi_task = NULL; /*!< wt_task_wifi handle — notified to react to events immediately */
-static TaskHandle_t s_ntp_task = NULL;  /*!< Dedicated task for the slow (up to 15 s) NTP sync             */
+static TaskHandle_t s_wifi_task = NULL; ///< wt_task_wifi handle, notified to react to events immediately
+static TaskHandle_t s_ntp_task = NULL;  ///< Dedicated task for the slow (up to 15 s) NTP sync
 static volatile uint8_t s_last_disconnect_reason = 0;
 
-/* ------------------------------------------------------------------ */
-/*  NVS helpers                                                          */
-/*  Operate on a caller-supplied snapshot only — no globals, no lock —   */
-/*  so the (slow) flash write can safely happen outside s_mutex.         */
-/* ------------------------------------------------------------------ */
+/* NVS helpers operate on a caller-supplied snapshot only no globals, no
+ * lock so the (slow) flash write can safely happen outside s_mutex. */
 
+/*!
+    \brief  Write the given profile snapshot to NVS (count plus per-index SSID/password).
+ */
 static void nvs_save_profiles(int cnt, const wt_wifi_profile_t *profiles)
 {
     nvs_handle_t h;
     if (nvs_open(WT_NVS_NS, NVS_READWRITE, &h) != ESP_OK)
     {
-        APPLOG_E("nvs_open (RW) failed — profiles not persisted");
+        wt_log_error("nvs_open (RW) failed profiles not persisted");
         return;
     }
 
     if (nvs_set_i32(h, WT_NVS_KEY_CNT, cnt) != ESP_OK)
     {
-        APPLOG_E("nvs_set_i32(prof_cnt) failed");
+        wt_log_error("nvs_set_i32(prof_cnt) failed");
     }
 
     char key[20];
@@ -106,27 +99,31 @@ static void nvs_save_profiles(int cnt, const wt_wifi_profile_t *profiles)
         snprintf(key, sizeof(key), WT_NVS_KEY_SSID, i);
         if (nvs_set_str(h, key, profiles[i].ssid) != ESP_OK)
         {
-            APPLOG_E("nvs_set_str(%s) failed", key);
+            wt_log_error("nvs_set_str(%s) failed", key);
         }
         snprintf(key, sizeof(key), WT_NVS_KEY_PASS, i);
         if (nvs_set_str(h, key, profiles[i].passwd) != ESP_OK)
         {
-            APPLOG_E("nvs_set_str(%s) failed", key);
+            wt_log_error("nvs_set_str(%s) failed", key);
         }
     }
     if (nvs_commit(h) != ESP_OK)
     {
-        APPLOG_E("nvs_commit(wifi profiles) failed");
+        wt_log_error("nvs_commit(wifi profiles) failed");
     }
     nvs_close(h);
 }
 
+/*!
+    \brief  Load the profile list from NVS into s_profiles/s_profile_cnt, seeding
+            a single default profile if no NVS namespace exists yet.
+ */
 static void nvs_load_profiles(void)
 {
     nvs_handle_t h;
     if (nvs_open(WT_NVS_NS, NVS_READONLY, &h) != ESP_OK)
     {
-        /* No stored profiles — seed with the one default that has real
+        /* No stored profiles seed with the one default that has real
            credentials.  Seeding empty slots would make the reconnect
            rotation cycle forever through unusable profiles. */
         s_profile_cnt = 1;
@@ -139,7 +136,7 @@ static void nvs_load_profiles(void)
     int32_t cnt = 0;
     if (nvs_get_i32(h, WT_NVS_KEY_CNT, &cnt) != ESP_OK)
     {
-        APPLOG_E("nvs_get_i32(prof_cnt) failed");
+        wt_log_error("nvs_get_i32(prof_cnt) failed");
     }
     s_profile_cnt = (cnt > WT_WIFI_MAX_PROFILES) ? WT_WIFI_MAX_PROFILES : (int)cnt;
 
@@ -151,23 +148,23 @@ static void nvs_load_profiles(void)
         snprintf(key, sizeof(key), WT_NVS_KEY_SSID, i);
         if (nvs_get_str(h, key, s_profiles[i].ssid, &len) != ESP_OK)
         {
-            APPLOG_E("nvs_get_str(%s) failed", key);
+            wt_log_error("nvs_get_str(%s) failed", key);
         }
 
         len = WT_WIFI_PASS_LEN;
         snprintf(key, sizeof(key), WT_NVS_KEY_PASS, i);
         if (nvs_get_str(h, key, s_profiles[i].passwd, &len) != ESP_OK)
         {
-            APPLOG_E("nvs_get_str(%s) failed", key);
+            wt_log_error("nvs_get_str(%s) failed", key);
         }
     }
     nvs_close(h);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Internal helpers                                                     */
-/* ------------------------------------------------------------------ */
-
+/*!
+    \brief  Build the STA wifi_config_t for the profile at index and apply it
+            via esp_wifi_set_config(), tracking it as the active profile.
+ */
 static void apply_sta_profile(int index)
 {
     memset(&s_sta_cfg, 0, sizeof(s_sta_cfg));
@@ -186,6 +183,10 @@ static void apply_sta_profile(int index)
     s_active_profile = index;
 }
 
+/*!
+    \brief  Propagate the STA-side DNS server to the SoftAP's DHCP server so
+            AP clients can resolve names through the upstream network.
+ */
 static void softap_set_dns(void)
 {
     esp_netif_dns_info_t dns;
@@ -194,25 +195,25 @@ static void softap_set_dns(void)
     uint8_t opt = WT_WIFI_DHCPS_OFFER_DNS;
     if (esp_netif_dhcps_stop(s_netif_ap) != ESP_OK)
     {
-        APPLOG_W("esp_netif_dhcps_stop failed");
+        wt_log_warn("esp_netif_dhcps_stop failed");
     }
     if (esp_netif_dhcps_option(s_netif_ap, ESP_NETIF_OP_SET,
                                ESP_NETIF_DOMAIN_NAME_SERVER, &opt, sizeof(opt)) != ESP_OK)
     {
-        APPLOG_W("esp_netif_dhcps_option failed");
+        wt_log_warn("esp_netif_dhcps_option failed");
     }
     if (esp_netif_set_dns_info(s_netif_ap, ESP_NETIF_DNS_MAIN, &dns) != ESP_OK)
     {
-        APPLOG_W("esp_netif_set_dns_info failed");
+        wt_log_warn("esp_netif_set_dns_info failed");
     }
     if (esp_netif_dhcps_start(s_netif_ap) != ESP_OK)
     {
-        APPLOG_W("esp_netif_dhcps_start failed");
+        wt_log_warn("esp_netif_dhcps_start failed");
     }
 }
 
 /*!
-    \brief  Blocking (up to ~15 s) NTP sync — runs only on the dedicated
+    \brief  Blocking (up to ~15 s) NTP sync runs only on the dedicated
             ntp_sync_task, never inline in the WiFi event-handler callback.
  */
 static void obtain_time(void)
@@ -236,10 +237,10 @@ static void obtain_time(void)
 
     if (retry < 15)
     {
-        APPLOG_I("NTP synced: %s", asctime(&ti));
+        wt_log_info("NTP synced: %s", asctime(&ti));
 
         time(&now);
-        APPLOG_I("EPOCH TIME %lld", now);
+        wt_log_info("EPOCH TIME %lld", now);
 
         struct tm utc, local;
         gmtime_r(&now, &utc);
@@ -249,13 +250,13 @@ static void obtain_time(void)
         tzset();
         localtime_r(&now, &local);
 
-        APPLOG_I("NTP Time  : %02d/%02d/%04d %02d:%02d:%02d",
+        wt_log_info("NTP Time  : %02d/%02d/%04d %02d:%02d:%02d",
                  ti.tm_mday, ti.tm_mon + 1, ti.tm_year + 1900,
                  ti.tm_hour, ti.tm_min, ti.tm_sec);
-        APPLOG_I("UTC       : %02d/%02d/%04d %02d:%02d:%02d (UTC)",
+        wt_log_info("UTC       : %02d/%02d/%04d %02d:%02d:%02d (UTC)",
                  utc.tm_mday, utc.tm_mon + 1, utc.tm_year + 1900,
                  utc.tm_hour, utc.tm_min, utc.tm_sec);
-        APPLOG_I("LOCAL     : %02d/%02d/%04d %02d:%02d:%02d (%s)",
+        wt_log_info("LOCAL     : %02d/%02d/%04d %02d:%02d:%02d (%s)",
                  local.tm_mday, local.tm_mon + 1, local.tm_year + 1900,
                  local.tm_hour, local.tm_min, local.tm_sec, tzname[0]);
 
@@ -270,7 +271,7 @@ static void obtain_time(void)
     }
     else
     {
-        APPLOG_W("NTP sync timed out");
+        wt_log_warn("NTP sync timed out");
     }
 }
 
@@ -308,10 +309,10 @@ static bool wifi_disconnect_reason_is_unrecoverable(uint8_t reason)
     }
 }
 
-/* ------------------------------------------------------------------ */
-/*  Event handler                                                        */
-/* ------------------------------------------------------------------ */
-
+/*!
+    \brief  Central WIFI_EVENT/IP_EVENT handler: updates the shared status
+            snapshot and generation counter, and wakes the reconnect/NTP tasks.
+ */
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                int32_t id, void *data)
 {
@@ -320,7 +321,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         switch (id)
         {
         case WIFI_EVENT_STA_START:
-            APPLOG_I("STA started");
+            wt_log_info("STA started");
             xSemaphoreTake(s_mutex, portMAX_DELAY);
             s_status.sta_started = true;
             s_generation++;
@@ -345,7 +346,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
                      "%.*s", evt->ssid_len, evt->ssid);
             s_generation++;
             xSemaphoreGive(s_mutex);
-            APPLOG_I("STA connected: %.*s", evt->ssid_len, evt->ssid);
+            wt_log_info("STA connected: %.*s", evt->ssid_len, evt->ssid);
             break;
         }
 
@@ -374,7 +375,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             strlcpy(s_status.ap_ip, WT_WIFI_AP_IP, sizeof(s_status.ap_ip));
             s_generation++;
             xSemaphoreGive(s_mutex);
-            APPLOG_I("AP started: %s", WT_WIFI_AP_SSID);
+            wt_log_info("AP started: %s", WT_WIFI_AP_SSID);
             break;
 
         case WIFI_EVENT_AP_STACONNECTED:
@@ -406,7 +407,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
                      IPSTR, IP2STR(&evt->ip_info.ip));
             s_generation++;
             xSemaphoreGive(s_mutex);
-            APPLOG_I("Got IP: " IPSTR, IP2STR(&evt->ip_info.ip));
+            wt_log_info("Got IP: " IPSTR, IP2STR(&evt->ip_info.ip));
             softap_set_dns();
             if (s_ntp_task)
             {
@@ -417,10 +418,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     }
 }
 
-/* ------------------------------------------------------------------ */
-/*  Public management API                                                */
-/* ------------------------------------------------------------------ */
-
+/*!
+    \brief  Get a snapshot of current WiFi state.
+ */
 wt_wifi_status_t wt_wifi_get_status(void)
 {
     wt_wifi_status_t snap;
@@ -444,6 +444,12 @@ wt_wifi_status_t wt_wifi_get_status(void)
     return snap;
 }
 
+/*!
+    \brief  Copy the stored profile list into caller-supplied array.
+    \param[out] out        Destination array of at least max_count entries.
+    \param[in]  max_count  Maximum profiles to copy.
+    \return Number of profiles copied.
+ */
 int wt_wifi_get_profiles(wt_wifi_profile_t *out, int max_count)
 {
     if (!out || max_count <= 0 || !s_mutex)
@@ -455,6 +461,12 @@ int wt_wifi_get_profiles(wt_wifi_profile_t *out, int max_count)
     return n;
 }
 
+/*!
+    \brief  Add a new STA profile (persisted to NVS).
+    \param[in]  ssid    SSID of the new profile.
+    \param[in]  passwd  Passphrase for the new profile (may be empty/NULL for open networks).
+    \return true on success, false if the list is full or args are invalid.
+ */
 bool wt_wifi_add_profile(const char *ssid, const char *passwd)
 {
     if (!ssid || !s_mutex)
@@ -481,10 +493,15 @@ bool wt_wifi_add_profile(const char *ssid, const char *passwd)
     /* Flash write happens outside the lock so it never blocks
        wifi_event_handler from processing connect/disconnect events. */
     nvs_save_profiles(cnt, snapshot);
-    APPLOG_I("Profile added: %s", ssid);
+    wt_log_info("Profile added: %s", ssid);
     return true;
 }
 
+/*!
+    \brief  Remove profile at index (persisted to NVS).
+    \param[in]  index  Index of the profile to remove.
+    \return true on success.
+ */
 bool wt_wifi_remove_profile(int index)
 {
     if (!s_mutex)
@@ -501,10 +518,10 @@ bool wt_wifi_remove_profile(int index)
     }
     if (s_profile_cnt <= 1)
     {
-        /* Refuse to remove the last profile — the reconnect task divides
+        /* Refuse to remove the last profile the reconnect task divides
            by s_profile_cnt when rotating, so it must never reach zero. */
         xSemaphoreGive(s_mutex);
-        APPLOG_W("Refusing to remove the last WiFi profile");
+        wt_log_warn("Refusing to remove the last WiFi profile");
         return false;
     }
     /* Shift entries down */
@@ -521,10 +538,17 @@ bool wt_wifi_remove_profile(int index)
     xSemaphoreGive(s_mutex);
 
     nvs_save_profiles(cnt, snapshot);
-    APPLOG_I("Profile %d removed", index);
+    wt_log_info("Profile %d removed", index);
     return true;
 }
 
+/*!
+    \brief  Monotonic counter incremented whenever WiFi state that matters to
+            UI clients changes (profile list edits, STA connect/disconnect,
+            AP client count, IP address). Does NOT change on RSSI drift alone,
+            so a caller can use it to decide "has anything worth re-pushing
+            changed" instead of resending the whole WiFi object on a timer.
+ */
 uint32_t wt_wifi_get_generation(void)
 {
     uint32_t gen = 0;
@@ -538,6 +562,12 @@ uint32_t wt_wifi_get_generation(void)
     return gen;
 }
 
+/*!
+    \brief  Immediately connect to the profile at index.
+            Disconnects any current session first.
+    \param[in]  index  Index of the profile to connect to.
+    \return true if the request was accepted (async connection may fail).
+ */
 bool wt_wifi_connect_profile(int index)
 {
     if (!s_mutex)
@@ -560,17 +590,17 @@ bool wt_wifi_connect_profile(int index)
     esp_wifi_disconnect();
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_wifi_connect();
-    APPLOG_I("Connecting to profile %d: %s", index, ssid);
+    wt_log_info("Connecting to profile %d: %s", index, ssid);
     return true;
 }
 
-/* ------------------------------------------------------------------ */
-/*  WiFi task                                                            */
-/* ------------------------------------------------------------------ */
-
+/*!
+    \brief  FreeRTOS task pin to Core 0.
+    \param[in]  pvParameters  Unused (required by the FreeRTOS task function signature).
+ */
 void wt_task_wifi(void *pvParameters)
 {
-    // APPLOG_I("---------- WIFI TASK STARTED ----------");
+    // wt_log_info("---------- WIFI TASK STARTED ----------");
 
     s_wifi_task = xTaskGetCurrentTaskHandle();
     s_mutex = xSemaphoreCreateMutex();
@@ -581,7 +611,7 @@ void wt_task_wifi(void *pvParameters)
 
     /* Load STA profiles from NVS */
     nvs_load_profiles();
-    APPLOG_I("Loaded %d WiFi profiles", s_profile_cnt);
+    wt_log_info("Loaded %d WiFi profiles", s_profile_cnt);
 
     /* Register events */
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
@@ -610,9 +640,9 @@ void wt_task_wifi(void *pvParameters)
     s_netif_sta = esp_netif_create_default_wifi_sta();
 
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &s_ap_cfg));
-    APPLOG_I("AP started: %s / %s", WT_WIFI_AP_SSID, WT_WIFI_AP_PASSWORD);
+    wt_log_info("AP started: %s / %s", WT_WIFI_AP_SSID, WT_WIFI_AP_PASSWORD);
 
-    /* STA config — first profile */
+    /* STA config first profile */
     if (s_profile_cnt > 0)
         apply_sta_profile(0);
 
@@ -651,7 +681,7 @@ void wt_task_wifi(void *pvParameters)
 
             if (!rotate_now)
             {
-                APPLOG_I("WiFi connect attempt (%d/%d) → %s",
+                wt_log_info("WiFi connect attempt (%d/%d) → %s",
                          WT_WIFI_STA_RETRY - s_retry_count,
                          WT_WIFI_STA_RETRY, active_ssid);
                 esp_wifi_connect();
@@ -667,7 +697,7 @@ void wt_task_wifi(void *pvParameters)
                 strlcpy(active_ssid, s_profiles[next].ssid, sizeof(active_ssid));
                 xSemaphoreGive(s_mutex);
 
-                APPLOG_I("Switching to profile %d: %s (reason=%u)", next, active_ssid, reason);
+                wt_log_info("Switching to profile %d: %s (reason=%u)", next, active_ssid, reason);
                 esp_wifi_connect();
             }
         }

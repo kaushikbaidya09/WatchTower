@@ -1,7 +1,11 @@
 /*!
     \file   wt_app_web.c
-    \brief  ESP-IDF HTTP server — AP-hosted management interface.
+    \brief  ESP-IDF HTTP server, AP-hosted management interface.
+
+    \details
+    See wt_app_web.h for the HTTP/WebSocket endpoint reference.
  */
+
 #include "wt_app_web.h"
 #include "wt_app_log.h"
 #include "wt_app_wifi.h"
@@ -33,10 +37,6 @@
 /* Captive-portal DNS server */
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
-
-/* ------------------------------------------------------------------ */
-/*  Helpers                                                           */
-/* ------------------------------------------------------------------ */
 
 /* No wildcard CORS: every RESP_JSON caller is a state-changing OTA endpoint
    (see finding #7) and same-origin requests from the served SPA don't need it. */
@@ -71,10 +71,6 @@ typedef struct
 static temperature_sensor_handle_t s_temp_sensor = NULL;
 static bool s_temp_sensor_ready = false;
 
-/* ------------------------------------------------------------------ */
-/*  WebSocket state                                                    */
-/* ------------------------------------------------------------------ */
-
 #define WS_MAX_CLIENTS 4          ///< Maximum allowed clients
 #define WS_MAX_INBOUND_PAYLOAD 8192 ///< Cap on an incoming WS frame before it is malloc'd (DoS guard)
 #define WS_DISPLAY_INTERVAL_MS 50 ///< Web Display fetch refresh rate
@@ -93,12 +89,20 @@ static SemaphoreHandle_t s_ws_mutex = NULL;
    anything has actually changed since the last broadcast. */
 static volatile bool s_ws_new_client = false;
 
+/*!
+    \brief  Marks every WS client slot as free (-1).
+ */
 static void ws_clients_init(void)
 {
     for (int i = 0; i < WS_MAX_CLIENTS; i++)
         s_ws_fds[i] = -1;
 }
 
+/*!
+    \brief  Registers a newly connected WS client fd in the client table
+            (a no-op if already present) and flags that a new client
+            connected so the next full frame gives it an initial snapshot.
+ */
 static void ws_client_add(int fd)
 {
     if (!s_ws_mutex || xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(50)) != pdTRUE)
@@ -124,9 +128,12 @@ static void ws_client_add(int fd)
         return;
 
     s_ws_new_client = true;
-    APPLOG_I("WS client connected fd=%d", fd);
+    wt_log_info("WS client connected fd=%d", fd);
 }
 
+/*!
+    \brief  Removes a WS client fd from the client table on disconnect.
+ */
 static void ws_client_remove(int fd)
 {
     if (!s_ws_mutex || xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(50)) != pdTRUE)
@@ -140,9 +147,13 @@ static void ws_client_remove(int fd)
         }
     }
     xSemaphoreGive(s_ws_mutex);
-    APPLOG_I("WS client disconnected fd=%d", fd);
+    wt_log_info("WS client disconnected fd=%d", fd);
 }
 
+/*!
+    \brief  Finds the first occurrence of a byte sequence within a buffer
+            (memmem-style search over raw, possibly non-NUL-terminated bytes).
+ */
 static const char *find_bytes(const char *buf, size_t buf_len, const char *needle, size_t needle_len)
 {
     if (!buf || !needle || needle_len == 0 || buf_len < needle_len)
@@ -156,6 +167,10 @@ static const char *find_bytes(const char *buf, size_t buf_len, const char *needl
     return NULL;
 }
 
+/*!
+    \brief  Parses the request's Content-Type header to detect a
+            multipart/form-data upload and extract its MIME boundary.
+ */
 static bool upload_stream_init(httpd_req_t *req, upload_stream_t *st)
 {
     memset(st, 0, sizeof(*st));
@@ -177,7 +192,7 @@ static bool upload_stream_init(httpd_req_t *req, upload_stream_t *st)
     size_t raw_len = strcspn(boundary, ";");
     if (raw_len == 0 || (raw_len + 2) >= sizeof(st->boundary))
     {
-        APPLOG_E("Upload boundary too long");
+        wt_log_error("Upload boundary too long");
         return false;
     }
 
@@ -190,6 +205,12 @@ static bool upload_stream_init(httpd_req_t *req, upload_stream_t *st)
     return true;
 }
 
+/*!
+    \brief  Flushes buffered multipart body bytes to the write callback,
+            holding back enough trailing bytes to still detect the closing
+            boundary marker on the next call (or emits the final payload
+            up to that marker when \p final_flush is set).
+ */
 static esp_err_t upload_stream_flush_payload(upload_stream_t *st, stream_write_cb_t write_cb, void *ctx, bool final_flush)
 {
     if (!st->multipart)
@@ -212,7 +233,7 @@ static esp_err_t upload_stream_flush_payload(upload_stream_t *st, stream_write_c
                                       tail_marker, tail_len);
         if (!tail)
         {
-            APPLOG_E("Upload tail boundary not found");
+            wt_log_error("Upload tail boundary not found");
             return ESP_FAIL;
         }
 
@@ -237,6 +258,10 @@ static esp_err_t upload_stream_flush_payload(upload_stream_t *st, stream_write_c
     return ESP_OK;
 }
 
+/*!
+    \brief  Feeds one received chunk into the upload stream parser,
+            skipping the multipart part headers before the first flush.
+ */
 static esp_err_t upload_stream_consume(upload_stream_t *st, const char *chunk, size_t chunk_len, stream_write_cb_t write_cb, void *ctx)
 {
     if (!st->multipart)
@@ -244,7 +269,7 @@ static esp_err_t upload_stream_consume(upload_stream_t *st, const char *chunk, s
 
     if ((st->pending_len + chunk_len) > sizeof(st->pending))
     {
-        APPLOG_E("Upload parser buffer overflow");
+        wt_log_error("Upload parser buffer overflow");
         return ESP_FAIL;
     }
 
@@ -268,6 +293,10 @@ static esp_err_t upload_stream_consume(upload_stream_t *st, const char *chunk, s
     return upload_stream_flush_payload(st, write_cb, ctx, false);
 }
 
+/*!
+    \brief  Flushes the final buffered payload bytes once the upload body
+            has been completely received.
+ */
 static esp_err_t upload_stream_finish(upload_stream_t *st, stream_write_cb_t write_cb, void *ctx)
 {
     if (!st->multipart)
@@ -275,12 +304,16 @@ static esp_err_t upload_stream_finish(upload_stream_t *st, stream_write_cb_t wri
 
     if (!st->headers_skipped)
     {
-        APPLOG_E("Upload part headers missing");
+        wt_log_error("Upload part headers missing");
         return ESP_FAIL;
     }
     return upload_stream_flush_payload(st, write_cb, ctx, true);
 }
 
+/*!
+    \brief  Lazily installs and enables the on-chip temperature sensor
+            peripheral on first use.
+ */
 static bool ensure_temp_sensor_ready(void)
 {
     if (s_temp_sensor_ready)
@@ -290,7 +323,7 @@ static bool ensure_temp_sensor_ready(void)
     esp_err_t err = temperature_sensor_install(&cfg, &s_temp_sensor);
     if (err != ESP_OK)
     {
-        APPLOG_E("temperature_sensor_install failed: %s", esp_err_to_name(err));
+        wt_log_error("temperature_sensor_install failed: %s", esp_err_to_name(err));
         s_temp_sensor = NULL;
         return false;
     }
@@ -298,7 +331,7 @@ static bool ensure_temp_sensor_ready(void)
     err = temperature_sensor_enable(s_temp_sensor);
     if (err != ESP_OK)
     {
-        APPLOG_E("temperature_sensor_enable failed: %s", esp_err_to_name(err));
+        wt_log_error("temperature_sensor_enable failed: %s", esp_err_to_name(err));
         temperature_sensor_uninstall(s_temp_sensor);
         s_temp_sensor = NULL;
         return false;
@@ -308,6 +341,10 @@ static bool ensure_temp_sensor_ready(void)
     return true;
 }
 
+/*!
+    \brief  Reads the current MCU die temperature in Celsius via the
+            temperature sensor peripheral.
+ */
 static bool read_mcu_temperature_c(float *out_celsius)
 {
     if (!out_celsius)
@@ -319,13 +356,17 @@ static bool read_mcu_temperature_c(float *out_celsius)
     esp_err_t err = temperature_sensor_get_celsius(s_temp_sensor, out_celsius);
     if (err != ESP_OK)
     {
-        APPLOG_E("temperature_sensor_get_celsius failed: %s", esp_err_to_name(err));
+        wt_log_error("temperature_sensor_get_celsius failed: %s", esp_err_to_name(err));
         return false;
     }
 
     return true;
 }
 
+/*!
+    \brief  Converts a wt_segd_anim_t enum value to its wire-format string
+            name.
+ */
 static const char *anim_to_string(wt_segd_anim_t anim)
 {
     switch (anim)
@@ -344,6 +385,10 @@ static const char *anim_to_string(wt_segd_anim_t anim)
     }
 }
 
+/*!
+    \brief  Converts a wt_segd_mode_t enum value to its wire-format string
+            name.
+ */
 static const char *mode_to_string(wt_segd_mode_t mode)
 {
     switch (mode)
@@ -354,14 +399,15 @@ static const char *mode_to_string(wt_segd_mode_t mode)
         return "text";
     case WT_SEGD_MODE_RAW:
         return "raw";
-    case WT_SEGD_MODE_DEMO:
-        return "demo";
     case WT_SEGD_MODE_NUMBER:
     default:
         return "number";
     }
 }
 
+/*!
+    \brief  Builds a [red,green,blue] cJSON array from a wt_segd_color_t.
+ */
 static cJSON *color_to_json(wt_segd_color_t color)
 {
     cJSON *arr = cJSON_CreateArray();
@@ -371,6 +417,9 @@ static cJSON *color_to_json(wt_segd_color_t color)
     return arr;
 }
 
+/*!
+    \brief  Compares two wt_segd_color_t values for equality.
+ */
 static bool color_eq(wt_segd_color_t a, wt_segd_color_t b)
 {
     return (a.red == b.red) && (a.green == b.green) && (a.blue == b.blue);
@@ -380,7 +429,7 @@ static bool color_eq(wt_segd_color_t a, wt_segd_color_t b)
     \brief  true if every per-segment color in the snapshot equals color_on,
             i.e. the common "single color for the whole display" case where
             sending the full per-digit-per-segment color array would be
-            redundant — the client can just fall back to color_on.
+            redundant the client can just fall back to color_on.
  */
 static bool digit_colors_all_match_color_on(const wt_segd_snapshot_t *snap)
 {
@@ -397,6 +446,10 @@ static bool digit_colors_all_match_color_on(const wt_segd_snapshot_t *snap)
     return true;
 }
 
+/*!
+    \brief  Uppercases and filters an input string down to the display's
+            supported character set (A-Z, 0-9, space, underscore, hyphen).
+ */
 static void sanitize_display_text(const char *src, char *dst, size_t dst_len)
 {
     if (!dst || dst_len == 0)
@@ -422,39 +475,30 @@ static void sanitize_display_text(const char *src, char *dst, size_t dst_len)
     dst[out] = '\0';
 }
 
-/* Note: no local "apply settings to display now" helper here — wt_settings_set()
+/* Note: no local "apply settings to display now" helper here wt_settings_set()
    already notifies the app_main display-request loop (see wt_app_settings.c), which rebuilds and
    pushes the wt_segd_request_t from the same wt_settings_t. Duplicating that
    mapping here would just be a second producer racing to write the same
    single-slot queue. */
 
-/* ------------------------------------------------------------------ */
-/*  wt_settings_t <-> JSON field table                                */
-/*                                                                     */
-/*  Single source of truth for the wire representation of settings.  */
-/*  Adding a setting field end-to-end on the wire is now ONE new row  */
-/*  in s_settings_fields[] instead of separate hand-written parse and */
-/*  serialize code blocks that have to be kept in sync by hand.       */
-/* ------------------------------------------------------------------ */
-
 typedef enum
 {
-    WT_SF_STR,           /*!< Plain string, strlcpy both directions            */
-    WT_SF_STR_SANITIZED, /*!< String, sanitized on parse (see sanitize_display_text) */
+    WT_SF_STR,           ///< Plain string, strlcpy both directions
+    WT_SF_STR_SANITIZED, ///< String, sanitized on parse (see sanitize_display_text)
     WT_SF_BOOL,
     WT_SF_U8,
     WT_SF_U16,
     WT_SF_I16,
-    WT_SF_U8_PCT255, /*!< uint8_t 0-255 struct field <-> wire percent 0-100     */
-    WT_SF_COLOR_HEX, /*!< color_hex[] string; parsing also derives color_on RGB */
+    WT_SF_U8_PCT255, ///< uint8_t 0-255 struct field <-> wire percent 0-100
+    WT_SF_COLOR_HEX, ///< color_hex[] string; parsing also derives color_on RGB
 } wt_settings_field_type_t;
 
 typedef struct
 {
     const char *key;
     wt_settings_field_type_t type;
-    size_t offset; /*!< offsetof(wt_settings_t, member)                       */
-    size_t size;   /*!< sizeof(member) — destination buffer size for strings  */
+    size_t offset; ///< offsetof(wt_settings_t, member)
+    size_t size;   ///< sizeof(member) destination buffer size for strings
 } wt_settings_field_t;
 
 /* sizeof-of-member below never dereferences the null pointer: sizeof's
@@ -475,7 +519,8 @@ static const wt_settings_field_t s_settings_fields[] = {
     WT_SF("display_value", WT_SF_I16, display_value),
     WT_SF("display_text", WT_SF_STR_SANITIZED, display_text),
     WT_SF("bg_effect_en", WT_SF_BOOL, bg_effect_en),
-    WT_SF("demo_effect", WT_SF_STR, demo_effect),
+    WT_SF("anim_effect", WT_SF_STR, anim_effect),
+    WT_SF("led_count", WT_SF_U16, led_count),
     WT_SF("time_format", WT_SF_U8, time_format),
     WT_SF("timezone", WT_SF_STR, timezone),
     WT_SF("ntp_server", WT_SF_STR, ntp_server),
@@ -493,6 +538,9 @@ static const wt_settings_field_t s_settings_fields[] = {
 };
 #define WT_SETTINGS_FIELD_COUNT (sizeof(s_settings_fields) / sizeof(s_settings_fields[0]))
 
+/*!
+    \brief  Looks up a settings wire field descriptor by its JSON key name.
+ */
 static const wt_settings_field_t *find_settings_field(const char *key)
 {
     for (size_t i = 0; i < WT_SETTINGS_FIELD_COUNT; i++)
@@ -620,10 +668,6 @@ static cJSON *settings_to_json_object(const wt_settings_t *s)
     return obj;
 }
 
-/* ------------------------------------------------------------------ */
-/*  SPIFFS                                                            */
-/* ------------------------------------------------------------------ */
-
 #define SPIFFS_BASE "/spiffs"
 #define INDEX_HTML SPIFFS_BASE "/index.html"
 #define STYLE_CSS SPIFFS_BASE "/style.css"
@@ -631,6 +675,10 @@ static cJSON *settings_to_json_object(const wt_settings_t *s)
 
 static bool spiffs_mounted = false;
 
+/*!
+    \brief  Mounts (formatting first if needed) the SPIFFS partition;
+            idempotent across repeated calls.
+ */
 static void mount_spiffs(void)
 {
     if (spiffs_mounted)
@@ -645,15 +693,18 @@ static void mount_spiffs(void)
     if (ret == ESP_OK || ret == ESP_ERR_INVALID_STATE)
     {
         spiffs_mounted = true;
-        APPLOG_I("SPIFFS mounted");
+        wt_log_info("SPIFFS mounted");
     }
     else
     {
-        APPLOG_E("SPIFFS mount failed: %d", ret);
+        wt_log_error("SPIFFS mount failed: %d", ret);
     }
 }
 
-/* Serve a file from SPIFFS using chunked transfer */
+/*!
+    \brief  Serves a file from SPIFFS to the HTTP client using chunked
+            transfer, or a 404 if it doesn't exist.
+ */
 static esp_err_t serve_file(httpd_req_t *req, const char *path, const char *content_type)
 {
     FILE *f = fopen(path, "r");
@@ -675,10 +726,10 @@ static esp_err_t serve_file(httpd_req_t *req, const char *path, const char *cont
     return ESP_OK;
 }
 
-/* ------------------------------------------------------------------ */
-/*  GET /                                                             */
-/* ------------------------------------------------------------------ */
-
+/*!
+    \brief  GET / handler: serves the SPA's index.html from SPIFFS, or a
+            minimal fallback placeholder page if it hasn't been uploaded yet.
+ */
 static esp_err_t handler_root(httpd_req_t *req)
 {
     struct stat st;
@@ -686,7 +737,7 @@ static esp_err_t handler_root(httpd_req_t *req)
     {
         return serve_file(req, INDEX_HTML, "text/html");
     }
-    /* Fallback — minimal redirect page */
+    /* Fallback minimal redirect page */
     const char *fb = "<html><body><h2>WatchTower</h2>"
                      "<p>Upload index.html via OTA tab.</p></body></html>";
     httpd_resp_set_type(req, "text/html");
@@ -694,32 +745,40 @@ static esp_err_t handler_root(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ------------------------------------------------------------------ */
-/*  GET /style.css                                                    */
-/* ------------------------------------------------------------------ */
-
+/*!
+    \brief  GET /style.css handler: serves the SPA stylesheet from SPIFFS
+            with a short cache lifetime.
+ */
 static esp_err_t handler_style_css(httpd_req_t *req)
 {
     httpd_resp_set_hdr(req, "Cache-Control", "max-age=300");
     return serve_file(req, STYLE_CSS, "text/css");
 }
 
-/* ------------------------------------------------------------------ */
-/*  GET /app.js                                                       */
-/* ------------------------------------------------------------------ */
-
+/*!
+    \brief  GET /app.js handler: serves the SPA script from SPIFFS with a
+            short cache lifetime.
+ */
 static esp_err_t handler_app_js(httpd_req_t *req)
 {
     httpd_resp_set_hdr(req, "Cache-Control", "max-age=300");
     return serve_file(req, APP_JS, "application/javascript");
 }
 
+/*!
+    \brief  upload_stream_t write callback that appends received bytes to
+            an in-progress OTA update.
+ */
 static esp_err_t ota_write_cb(void *ctx, const char *data, size_t len)
 {
     esp_ota_handle_t ota_handle = *(esp_ota_handle_t *)ctx;
     return esp_ota_write(ota_handle, data, len);
 }
 
+/*!
+    \brief  upload_stream_t write callback that appends received bytes to
+            an open SPIFFS file.
+ */
 static esp_err_t file_write_cb(void *ctx, const char *data, size_t len)
 {
     FILE *f = (FILE *)ctx;
@@ -746,23 +805,24 @@ static bool ota_client_is_on_ap_subnet(httpd_req_t *req)
 
 /*!
     \brief  Reject OTA requests arriving from the (untrusted) AP interface.
-            No token check — anyone on the trusted STA network can push an
+            No token check anyone on the trusted STA network can push an
             update, same as anyone on that network can use the WS commands.
  */
 static bool ota_request_authorized(httpd_req_t *req)
 {
     if (ota_client_is_on_ap_subnet(req))
     {
-        APPLOG_W("OTA rejected: request from AP interface");
+        wt_log_warn("OTA rejected: request from AP interface");
         return false;
     }
     return true;
 }
 
-/* ------------------------------------------------------------------ */
-/*  POST /api/ota/firmware  — OTA firmware update                     */
-/* ------------------------------------------------------------------ */
-
+/*!
+    \brief  Handles the firmware branch of POST /api/ota: streams the
+            multipart body into the next OTA partition, sets it as the
+            boot partition, and reboots on success.
+ */
 static esp_err_t handler_ota_firmware(httpd_req_t *req)
 {
     if (!ota_request_authorized(req))
@@ -771,7 +831,7 @@ static esp_err_t handler_ota_firmware(httpd_req_t *req)
         return ESP_OK;
     }
 
-    APPLOG_I("OTA firmware: %d bytes incoming", req->content_len);
+    wt_log_info("OTA firmware: %d bytes incoming", req->content_len);
 
     const esp_partition_t *update_part =
         esp_ota_get_next_update_partition(NULL);
@@ -839,7 +899,7 @@ static esp_err_t handler_ota_firmware(httpd_req_t *req)
     err = esp_ota_end(ota_handle);
     if (err != ESP_OK)
     {
-        APPLOG_E("esp_ota_end failed: %s", esp_err_to_name(err));
+        wt_log_error("esp_ota_end failed: %s", esp_err_to_name(err));
         RESP_ERR(req, "ota write/end failed");
         return ESP_OK;
     }
@@ -850,18 +910,18 @@ static esp_err_t handler_ota_firmware(httpd_req_t *req)
         return ESP_OK;
     }
 
-    APPLOG_I("OTA firmware done — rebooting in 2 s");
+    wt_log_info("OTA firmware done rebooting in 2 s");
     RESP_JSON(req, "{\"ok\":true,\"reboot\":true}");
     vTaskDelay(pdMS_TO_TICKS(2000));
     esp_restart();
     return ESP_OK;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Shared SPIFFS file upload helper                                  */
-/*  Streams a multipart/form-data body into a fixed SPIFFS path.     */
-/* ------------------------------------------------------------------ */
-
+/*!
+    \brief  Streams a multipart upload body into a SPIFFS asset file
+            (index.html/style.css/app.js), used by the non-firmware
+            POST /api/ota targets.
+ */
 static esp_err_t spiffs_file_upload(httpd_req_t *req, const char *spiffs_path,
                                     const char *label)
 {
@@ -871,7 +931,7 @@ static esp_err_t spiffs_file_upload(httpd_req_t *req, const char *spiffs_path,
         return ESP_OK;
     }
 
-    APPLOG_I("OTA %s: %d bytes incoming", label, req->content_len);
+    wt_log_info("OTA %s: %d bytes incoming", label, req->content_len);
 
     upload_stream_t stream;
     if (!upload_stream_init(req, &stream))
@@ -917,26 +977,22 @@ static esp_err_t spiffs_file_upload(httpd_req_t *req, const char *spiffs_path,
 
     if (ok)
     {
-        APPLOG_I("OTA %s: done", label);
+        wt_log_info("OTA %s: done", label);
         RESP_JSON(req, "{\"ok\":true}");
     }
     else
     {
-        APPLOG_E("OTA %s: write error", label);
+        wt_log_error("OTA %s: write error", label);
         RESP_JSON(req, "{\"ok\":false,\"error\":\"write error\"}");
     }
     return ESP_OK;
 }
 
-/* ------------------------------------------------------------------ */
-/*  POST /api/ota?target=firmware|index.html|style.css|app.js         */
-/*                                                                     */
-/*  A single route dispatches by the "target" query param instead of  */
-/*  registering one URI handler per uploadable file. Adding a new     */
-/*  uploadable asset later needs only a new entry in this table, not  */
-/*  a new HTTP route.                                                 */
-/* ------------------------------------------------------------------ */
-
+/*!
+    \brief  POST /api/ota handler: dispatches the upload to the firmware
+            OTA path or the matching SPIFFS asset target based on the
+            ?target= query parameter.
+ */
 static esp_err_t handler_ota(httpd_req_t *req)
 {
     static const struct
@@ -971,10 +1027,9 @@ static esp_err_t handler_ota(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ------------------------------------------------------------------ */
-/*  WebSocket handler  GET /ws                                        */
-/* ------------------------------------------------------------------ */
-
+/*!
+    \brief  Sends a single WS text frame back to the requesting client.
+ */
 static void ws_reply(httpd_req_t *req, const char *text)
 {
     httpd_ws_frame_t pkt = {
@@ -987,7 +1042,7 @@ static void ws_reply(httpd_req_t *req, const char *text)
     esp_err_t err = httpd_ws_send_frame(req, &pkt);
     if (err != ESP_OK)
     {
-        APPLOG_W("ws_reply: httpd_ws_send_frame failed (%s) len=%u fd=%d",
+        wt_log_warn("ws_reply: httpd_ws_send_frame failed (%s) len=%u fd=%d",
                  esp_err_to_name(err), (unsigned)pkt.len, httpd_req_to_sockfd(req));
     }
 }
@@ -1016,7 +1071,7 @@ static void ws_send_hello(httpd_req_t *req)
             lifetime of the current boot (chip identity, build info, OTA slot,
             reset reason) so the recurring "full" broadcast (every 2 s, forever)
             doesn't have to re-serialize and re-send unchanging strings on every
-            tick — see build_ws_payload() below, which only carries fields that
+            tick see build_ws_payload() below, which only carries fields that
             can actually change after boot.
  */
 static void ws_send_info(httpd_req_t *req)
@@ -1059,21 +1114,30 @@ static void ws_send_info(httpd_req_t *req)
                                            : (chip.model == CHIP_ESP32C3)   ? "ESP32-C3"
                                                                             : "Unknown";
 
+    const esp_app_desc_t *app_desc = esp_ota_get_app_description();
+
     char info[384];
     snprintf(info, sizeof(info),
              "{\"type\":\"info\","
              "\"chip_model\":\"%s\",\"cpu_cores\":%d,\"cpu_freq_mhz\":240,"
              "\"flash_size\":%u,"
-             "\"app_version\":\"1.0.0\",\"build_date\":\"%s %s\","
+             "\"app_version\":\"%s\",\"build_date\":\"%s %s\","
              "\"idf_version\":\"%s\",\"ota_slot\":\"%s\","
              "\"app0_state\":\"valid\",\"app1_state\":\"empty\","
+             "\"min_leds\":%d,\"max_leds\":%d,"
              "\"reset_reason\":\"%s\"}",
              chip_name, chip.cores, (unsigned)flash_size,
-             __DATE__, __TIME__, esp_get_idf_version(), ota_slot,
+             app_desc->version, __DATE__, __TIME__, esp_get_idf_version(), ota_slot,
+             WT_SEGD_TOTAL_LEDS, WT_SEGD_MAX_TOTAL_LEDS,
              reset_reason);
     ws_reply(req, info);
 }
 
+/*!
+    \brief  Parses an inbound WS JSON command and dispatches it to the
+            matching handler (ping/settings/ntp_sync/reboot/wifi), replying
+            with an ack frame.
+ */
 static void ws_dispatch(httpd_req_t *req, const char *json_str)
 {
     cJSON *j = cJSON_Parse(json_str);
@@ -1105,7 +1169,7 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
         cJSON_Delete(j);
         bool ok = wt_settings_set(&s);
         /* wt_settings_set() notifies the app_main display-request loop, which rebuilds and pushes
-           the display request from the new settings — no need to do it here too. */
+           the display request from the new settings no need to do it here too. */
         ws_reply(req, ok ? "{\"ack\":\"ok\"}" : "{\"ack\":\"err\",\"msg\":\"nvs write failed\"}");
         return;
     }
@@ -1120,7 +1184,7 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
             wt_settings_set(&s);
         }
         cJSON_Delete(j);
-        APPLOG_I("NTP sync requested via WS");
+        wt_log_info("NTP sync requested via WS");
         ws_reply(req, "{\"ack\":\"ok\"}");
         return;
     }
@@ -1182,13 +1246,13 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
 }
 
 /*!
-    \brief  ws_post_handshake_cb for /ws — fires exactly once, right after the
+    \brief  ws_post_handshake_cb for /ws fires exactly once, right after the
             WebSocket upgrade completes (CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT).
 
             From IDF v6.0.1, the main .handler is no longer invoked for the
             handshake itself (only for actual frames), so connection-time
-            setup — registering the fd for broadcasts and sending the
-            one-time hello/info frames — has to live here instead of behind
+            setup registering the fd for broadcasts and sending the
+            one-time hello/info frames has to live here instead of behind
             a req->method == HTTP_GET check in handler_ws().
  */
 static esp_err_t ws_on_connect(httpd_req_t *req)
@@ -1199,6 +1263,11 @@ static esp_err_t ws_on_connect(httpd_req_t *req)
     return ESP_OK;
 }
 
+/*!
+    \brief  /ws frame handler: receives one WS frame, handles close
+            frames and connection housekeeping, and forwards text
+            payloads to ws_dispatch().
+ */
 static esp_err_t handler_ws(httpd_req_t *req)
 {
     int fd = httpd_req_to_sockfd(req);
@@ -1224,7 +1293,7 @@ static esp_err_t handler_ws(httpd_req_t *req)
 
     if (pkt.len > WS_MAX_INBOUND_PAYLOAD)
     {
-        APPLOG_W("WS rx: frame too large (%u bytes) — dropping connection", (unsigned)pkt.len);
+        wt_log_warn("WS rx: frame too large (%u bytes) dropping connection", (unsigned)pkt.len);
         ws_client_remove(fd);
         return ESP_FAIL;
     }
@@ -1232,7 +1301,7 @@ static esp_err_t handler_ws(httpd_req_t *req)
     uint8_t *buf = (uint8_t *)malloc(pkt.len + 1);
     if (!buf)
     {
-        APPLOG_E("WS rx: OOM");
+        wt_log_error("WS rx: OOM");
         return ESP_ERR_NO_MEM;
     }
     pkt.payload = buf;
@@ -1251,20 +1320,16 @@ static esp_err_t handler_ws(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ------------------------------------------------------------------ */
-/*  WebSocket push — build full-state and display-only frames         */
-/* ------------------------------------------------------------------ */
-
 /*!
     \brief  Build the periodic "full" WS frame.
 
-    \param  force  When true, rebuild and include the wifi/settings/power
+    \param[in]  force  When true, rebuild and include the wifi/settings/power
                     sub-objects even if their generation counters haven't
                     changed (used to give a freshly connected client an
                     initial snapshot). Otherwise those sub-objects are only
                     rebuilt when their underlying state actually changed
-                    since the last call — see wt_settings_get_generation()/
-                    wt_wifi_get_generation() — and are sent as JSON null
+                    since the last call see wt_settings_get_generation()/
+                    wt_wifi_get_generation() and are sent as JSON null
                     otherwise, so an idle device isn't rebuilding/re-sending
                     the same bytes on every tick.
  */
@@ -1330,7 +1395,7 @@ static void build_ws_payload(char *buf, size_t buf_len, uint32_t *inout_log_seq,
     wt_log_read_json(*inout_log_seq, log_json, sizeof(log_json), &next_seq);
     *inout_log_seq = next_seq;
 
-    /* ---- WiFi (tier 2 — only rebuilt when wt_wifi_get_generation() changes) ---- */
+    /* ---- WiFi (tier 2 only rebuilt when wt_wifi_get_generation() changes) ---- */
     static uint32_t s_last_wifi_gen = 0;
     static char wifi_json[1024];
     uint32_t wifi_gen = wt_wifi_get_generation();
@@ -1377,7 +1442,7 @@ static void build_ws_payload(char *buf, size_t buf_len, uint32_t *inout_log_seq,
         strlcpy(wifi_json, "null", sizeof(wifi_json));
     }
 
-    /* ---- Power + Settings (tier 2 — only rebuilt when wt_settings_get_generation()
+    /* ---- Power + Settings (tier 2 only rebuilt when wt_settings_get_generation()
        changes; both are derived entirely from wt_settings_t) ---- */
     static uint32_t s_last_settings_gen = 0;
     static char power_json[256];
@@ -1440,6 +1505,10 @@ static void build_ws_payload(char *buf, size_t buf_len, uint32_t *inout_log_seq,
              disp_json, wifi_json, power_json, settings_json, log_json);
 }
 
+/*!
+    \brief  Appends a printf-formatted fragment to a JSON buffer at a
+            running offset, tracking overflow.
+ */
 static bool append_jsonf(char *buf, size_t buf_len, size_t *offset, const char *fmt, ...)
 {
     if (!buf || !offset || *offset >= buf_len)
@@ -1465,6 +1534,10 @@ static bool append_jsonf(char *buf, size_t buf_len, size_t *offset, const char *
     return true;
 }
 
+/*!
+    \brief  Serializes a display snapshot into the "disp"/"display" JSON
+            fragment shared by the WS display-only and full frames.
+ */
 static void format_display_json(char *buf, size_t buf_len, const wt_segd_snapshot_t *snap, bool with_type)
 {
     if (!buf || buf_len == 0)
@@ -1515,7 +1588,7 @@ static void format_display_json(char *buf, size_t buf_len, const wt_segd_snapsho
         goto overflow;
     }
 
-    /* Per-segment colors are only sent when they diverge from color_on —
+    /* Per-segment colors are only sent when they diverge from color_on  
        the common "single color for the whole display" case just omits the
        key, and the client already falls back to color_on/brightness. This
        is the highest-frequency frame in the protocol (~20 fps), so skipping
@@ -1567,6 +1640,10 @@ overflow:
     snprintf(buf, buf_len, with_type ? "{\"type\":\"disp\",\"display\":null}" : "null");
 }
 
+/*!
+    \brief  Builds the periodic display-only WS frame ("disp" type) from
+            the current segment-display snapshot.
+ */
 static void build_display_frame(char *buf, size_t buf_len)
 {
     wt_segd_snapshot_t snap;
@@ -1578,6 +1655,10 @@ static void build_display_frame(char *buf, size_t buf_len)
     format_display_json(buf, buf_len, &snap, true);
 }
 
+/*!
+    \brief  Broadcasts a WS text payload to every connected client,
+            closing any connection whose send fails.
+ */
 static void ws_broadcast_frame(const char *payload)
 {
     httpd_ws_frame_t pkt = {
@@ -1601,7 +1682,7 @@ static void ws_broadcast_frame(const char *payload)
                client-side auto-reconnect never triggers. Explicitly ask the server
                to tear the session down so the client actually sees a close and
                reconnects instead of sitting on stale data indefinitely. */
-            APPLOG_W("WS send failed fd=%d (%s) — closing", s_ws_fds[i], esp_err_to_name(err));
+            wt_log_warn("WS send failed fd=%d (%s) closing", s_ws_fds[i], esp_err_to_name(err));
             httpd_sess_trigger_close(s_http_server, s_ws_fds[i]);
             s_ws_fds[i] = -1;
         }
@@ -1609,21 +1690,16 @@ static void ws_broadcast_frame(const char *payload)
     xSemaphoreGive(s_ws_mutex);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Captive-portal — DNS hijack + OS probe HTTP handlers              */
-/*                                                                     */
-/*  When a device connects to the ESP32 AP, its OS sends a known HTTP */
-/*  probe to check for internet access.  We intercept every DNS query */
-/*  (UDP/53) and return 192.168.4.1, then serve OS-specific responses */
-/*  on those probe URLs so the device shows the "Sign in" notification.*/
-/* ------------------------------------------------------------------ */
-
 #define CAPTIVE_AP_IP "192.168.4.1"
 #define CAPTIVE_DNS_PORT 53
 #define CAPTIVE_DNS_BUF_SIZE 512
 
-/* Stateless DNS query handler — mutates buf in-place, sends reply.
-   Called from wt_task_web after recvfrom() returns ≥12 bytes.       */
+/*!
+    \brief  Answers a captive-portal DNS query in place, rewriting it into
+            an authoritative response that points every A/ANY query at the
+            AP's own IP address. Called from wt_task_web after recvfrom()
+            returns >=12 bytes.
+ */
 static void dns_handle_query(uint8_t *buf, int len, int sock,
                              struct sockaddr_in *client, socklen_t clen)
 {
@@ -1690,9 +1766,12 @@ past_name:
     sendto(sock, buf, pos, 0, (struct sockaddr *)client, clen);
 }
 
-/* iOS / macOS — probe: GET /hotspot-detect.html
-   Must NOT return 200+"Success" (that means "has internet").
-   A 302 triggers the CNA (Captive Network Assistant) sheet.         */
+/*!
+    \brief  Answers the iOS/macOS captive-portal probe (GET
+            /hotspot-detect.html, /library/test/success.html) with a 302
+            redirect must not return 200+"Success" (that would mean
+            "has internet") so the OS shows the Captive Network Assistant.
+ */
 static esp_err_t handler_captive_apple(httpd_req_t *req)
 {
     httpd_resp_set_status(req, "302 Found");
@@ -1706,8 +1785,11 @@ static esp_err_t handler_captive_apple(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* Android / Chrome — probe: GET /generate_204
-   Expects 204 for "no portal"; non-204 triggers portal notification. */
+/*!
+    \brief  Answers the Android/Chrome captive-portal probe (GET
+            /generate_204, /gen_204) with a non-204 redirect so the OS
+            raises its portal notification.
+ */
 static esp_err_t handler_captive_android(httpd_req_t *req)
 {
     httpd_resp_set_status(req, "302 Found");
@@ -1717,8 +1799,10 @@ static esp_err_t handler_captive_android(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* Windows NCSI — probe: GET /ncsi.txt
-   Content must be exactly "Microsoft NCSI".                         */
+/*!
+    \brief  Answers the Windows NCSI captive-portal probe (GET /ncsi.txt)
+            with the exact expected "Microsoft NCSI" body.
+ */
 static esp_err_t handler_captive_win_ncsi(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/plain");
@@ -1727,7 +1811,10 @@ static esp_err_t handler_captive_win_ncsi(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* Windows connect test — probe: GET /connecttest.txt               */
+/*!
+    \brief  Answers the Windows connectivity-test probe (GET
+            /connecttest.txt).
+ */
 static esp_err_t handler_captive_win_connect(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/plain");
@@ -1736,7 +1823,10 @@ static esp_err_t handler_captive_win_connect(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* Firefox — probe: GET /canonical.html                             */
+/*!
+    \brief  Answers the Firefox captive-portal probe (GET /canonical.html)
+            with an HTML meta-refresh redirect.
+ */
 static esp_err_t handler_captive_firefox(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
@@ -1748,7 +1838,10 @@ static esp_err_t handler_captive_firefox(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* Generic redirect — /redirect and /success.txt                    */
+/*!
+    \brief  Generic captive-portal redirect handler for GET /redirect and
+            /success.txt.
+ */
 static esp_err_t handler_captive_redirect(httpd_req_t *req)
 {
     httpd_resp_set_status(req, "302 Found");
@@ -1762,10 +1855,10 @@ static esp_err_t handler_captive_redirect(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Server start                                                      */
-/* ------------------------------------------------------------------ */
-
+/*!
+    \brief  Starts the HTTP server and registers all static-asset, OTA,
+            captive-portal probe, and WebSocket URI handlers.
+ */
 static void start_server(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
@@ -1778,7 +1871,7 @@ static void start_server(void)
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &cfg) != ESP_OK)
     {
-        APPLOG_E("Failed to start HTTP server");
+        wt_log_error("Failed to start HTTP server");
         return;
     }
 
@@ -1790,15 +1883,15 @@ static void start_server(void)
         httpd_uri_t _u = {.uri = (u), .method = (m), .handler = (h)};       \
         esp_err_t _e = httpd_register_uri_handler(server, &_u);             \
         if (_e != ESP_OK)                                                  \
-            APPLOG_E("Failed to register URI %s: %s", (u), esp_err_to_name(_e)); \
+            wt_log_error("Failed to register URI %s: %s", (u), esp_err_to_name(_e)); \
     } while (0)
 
-    /* ── Static assets — needed for initial page load only ── */
+    /* ── Static assets needed for initial page load only ── */
     REG(HTTP_GET, "/", handler_root);
     REG(HTTP_GET, "/style.css", handler_style_css);
     REG(HTTP_GET, "/app.js", handler_app_js);
 
-    /* ── OTA uploads — binary multipart, cannot go over WebSocket ── */
+    /* ── OTA uploads binary multipart, cannot go over WebSocket ── */
     REG(HTTP_POST, "/api/ota", handler_ota);
 
     /* ── Captive-portal OS probe handlers ── */
@@ -1814,7 +1907,7 @@ static void start_server(void)
 
 #undef REG
 
-    /* ── WebSocket — ALL live data and commands go through here ── */
+    /* ── WebSocket ALL live data and commands go through here ── */
     {
         httpd_uri_t ws_uri = {
             .uri = "/ws",
@@ -1826,25 +1919,24 @@ static void start_server(void)
         };
         esp_err_t ws_err = httpd_register_uri_handler(server, &ws_uri);
         if (ws_err != ESP_OK)
-            APPLOG_E("Failed to register /ws handler: %s", esp_err_to_name(ws_err));
+            wt_log_error("Failed to register /ws handler: %s", esp_err_to_name(ws_err));
     }
 
-    APPLOG_I("HTTP server started: 3 assets, 1 OTA, 9 captive, 1 WS");
+    wt_log_info("HTTP server started: 3 assets, 1 OTA, 9 captive, 1 WS");
 }
 
-/* ------------------------------------------------------------------ */
-/*  Task                                                              */
-/* ------------------------------------------------------------------ */
-
+/*!
+    \brief  FreeRTOS task. Pin to Core 0 alongside the WiFi task.
+ */
 void wt_task_web(void *pvParameters)
 {
-    // APPLOG_I("---------- WEB TASK STARTED ----------");
+    // wt_log_info("---------- WEB TASK STARTED ----------");
 
     /* Initialise WebSocket client table and mutex */
     ws_clients_init();
     s_ws_mutex = xSemaphoreCreateMutex();
     if (!s_ws_mutex)
-        APPLOG_E("Failed to create WS mutex");
+        wt_log_error("Failed to create WS mutex");
 
     /* Wait for WiFi AP to come up */
     vTaskDelay(pdMS_TO_TICKS(3000));
@@ -1875,18 +1967,18 @@ void wt_task_web(void *pvParameters)
         };
         if (bind(dns_sock, (struct sockaddr *)&srv, sizeof(srv)) < 0)
         {
-            APPLOG_E("Captive DNS: bind() failed");
+            wt_log_error("Captive DNS: bind() failed");
             close(dns_sock);
             dns_sock = -1;
         }
         else
         {
-            APPLOG_I("Captive portal DNS running (UDP/53 → %s)", CAPTIVE_AP_IP);
+            wt_log_info("Captive portal DNS running (UDP/53 → %s)", CAPTIVE_AP_IP);
         }
     }
     else
     {
-        APPLOG_E("Captive DNS: socket() failed");
+        wt_log_error("Captive DNS: socket() failed");
     }
 
     /* ── WS broadcast + DNS main loop ── */
@@ -1899,7 +1991,7 @@ void wt_task_web(void *pvParameters)
 
     for (;;)
     {
-        /* 1. DNS receive — blocks at most WS_DISPLAY_INTERVAL_MS */
+        /* 1. DNS receive blocks at most WS_DISPLAY_INTERVAL_MS */
         if (dns_sock >= 0)
         {
             struct sockaddr_in client;
@@ -1914,7 +2006,7 @@ void wt_task_web(void *pvParameters)
             vTaskDelay(pdMS_TO_TICKS(WS_DISPLAY_INTERVAL_MS));
         }
 
-        /* 2. WS broadcast — fire once per WS_DISPLAY_INTERVAL_MS */
+        /* 2. WS broadcast fire once per WS_DISPLAY_INTERVAL_MS */
         int64_t now_us = esp_timer_get_time();
         if ((now_us - last_ws_us) < (int64_t)(WS_DISPLAY_INTERVAL_MS * 1000LL))
             continue;
@@ -1944,7 +2036,7 @@ void wt_task_web(void *pvParameters)
         {
             /* Full-state frame: system + logs every tick; wifi/power/settings
                only when their generation counters changed (or a client just
-               connected and needs an initial snapshot) — see build_ws_payload(). */
+               connected and needs an initial snapshot) see build_ws_payload(). */
             tick_cnt = 0;
             bool force_tier2 = s_ws_new_client;
             s_ws_new_client = false;

@@ -1114,7 +1114,7 @@ static void ws_send_info(httpd_req_t *req)
                                            : (chip.model == CHIP_ESP32C3)   ? "ESP32-C3"
                                                                             : "Unknown";
 
-    const esp_app_desc_t *app_desc = esp_ota_get_app_description();
+    const esp_app_desc_t *app_desc = esp_app_get_description();
 
     char info[384];
     snprintf(info, sizeof(info),

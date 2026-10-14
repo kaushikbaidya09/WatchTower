@@ -3,3 +3,7 @@ version = 1
 firmware = '../../build/flasher_args.json'
 elf = '../../build/WatchTower.elf'
 gdbServerPort=3333
+
+[[net.forward]]
+from = "localhost:8180"
+to = "target:80"

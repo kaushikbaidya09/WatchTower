@@ -1,0 +1,61 @@
+{
+    "folders": [
+        {
+            "path": ".",
+        },
+    ],
+    "settings": {
+        "idf.currentSetup": "${env:HOME}/.espressif/v6.0.2/esp-idf",
+        "idf.port": "/dev/ttyACM0",
+        "idf.flashType": "UART",
+        "idf.openOcdConfigs": ["board/esp32s3-builtin.cfg"],
+        "idf.customExtraVars": {
+            "IDF_TARGET": "esp32s3",
+            "IDF_CCACHE_ENABLE": "1",
+        },
+        "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+        "editor.formatOnSave": true,
+        "C_Cpp.clang_format_style": "file:${workspaceFolder}/tools/config/.clang-format",
+        "prettier.configPath": "tools/config/.prettierrc",
+        "[c]": {
+            "editor.defaultFormatter": "ms-vscode.cpptools",
+        },
+        "[html]": {
+            "editor.defaultFormatter": "esbenp.prettier-vscode",
+        },
+        "[css]": {
+            "editor.defaultFormatter": "esbenp.prettier-vscode",
+        },
+        "[javascript]": {
+            "editor.defaultFormatter": "esbenp.prettier-vscode",
+        },
+    },
+    "extensions": {
+        "recommendations": [
+            "espressif.esp-idf-extension",
+            "llvm-vs-code-extensions.vscode-clangd",
+            "ms-vscode.cpptools",
+            "esbenp.prettier-vscode",
+        ],
+    },
+    "launch": {
+        "version": "0.2.0",
+        "configurations": [
+            {
+                "type": "gdbtarget",
+                "request": "attach",
+                "name": "Eclipse CDT GDB Adapter",
+            },
+            {
+                "name": "Wokwi GDB",
+                "type": "cppdbg",
+                "request": "launch",
+                "program": "${workspaceFolder}/build/WatchTower.elf",
+                "cwd": "${workspaceFolder}",
+                "MIMode": "gdb",
+                "miDebuggerPath": "${command:espIdf.getToolchainGdb}",
+                "miDebuggerServerAddress": "localhost:3333",
+            },
+        ],
+    },
+}

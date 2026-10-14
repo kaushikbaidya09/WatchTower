@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        <meta name="color-scheme" content="light dark" />
+        <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)" />
+        <meta name="theme-color" content="#111214" media="(prefers-color-scheme: dark)" />
+        <title>WatchTower</title>
+        <link rel="stylesheet" href="style.css" />
+        <script src="app.js" defer></script>
+    </head>
+    <body>
+        <header class="top">
+            <div class="brand">
+                <span id="conn" class="conn" title="Connecting"></span>
+                <span id="hdr-name">WatchTower</span>
+            </div>
+            <nav id="tabs" class="tabs" aria-label="Sections">
+                <button data-tab="display" class="active">
+                    <svg viewBox="0 0 24 24">
+                        <rect x="3" y="6" width="18" height="12" rx="2" />
+                        <path d="M8 10v4M12 10v4M16 10v4" /></svg
+                    ><span>Display</span>
+                </button>
+                <button data-tab="clock">
+                    <svg viewBox="0 0 24 24">
+                        <circle cx="12" cy="12" r="9" />
+                        <path d="M12 7v5l3 2" /></svg
+                    ><span>Clock</span>
+                </button>
+                <button data-tab="network">
+                    <svg viewBox="0 0 24 24">
+                        <path
+                            d="M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"
+                        />
+                        <circle cx="12" cy="19" r="1" /></svg
+                    ><span>Network</span>
+                </button>
+                <button data-tab="system">
+                    <svg viewBox="0 0 24 24">
+                        <rect x="6" y="6" width="12" height="12" rx="2" />
+                        <path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" /></svg
+                    ><span>System</span>
+                </button>
+                <button data-tab="logs">
+                    <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10" /></svg
+                    ><span>Logs</span>
+                </button>
+            </nav>
+            <button id="theme" class="icon" aria-label="Toggle theme">
+                <svg viewBox="0 0 24 24">
+                    <path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" />
+                </svg>
+            </button>
+        </header>
+
+        <main>
+            <!-- Display -->
+            <section id="tab-display" class="tab active">
+                <div class="preview"><canvas id="disp" aria-label="Live display"></canvas></div>
+                <div class="grid">
+                    <div class="card">
+                        <h2>Show</h2>
+                        <div class="seg" id="mode">
+                            <button data-v="time">Clock</button
+                            ><button data-v="number">Number</button
+                            ><button data-v="text">Text</button>
+                        </div>
+                        <label class="row" id="row-number" hidden
+                            >Number<input
+                                id="value"
+                                type="number"
+                                min="0"
+                                max="9999"
+                                inputmode="numeric"
+                        /></label>
+                        <label class="row" id="row-text" hidden
+                            >Text<input
+                                id="text"
+                                maxlength="4"
+                                autocapitalize="characters"
+                                placeholder="A-Z 0-9 - _"
+                        /></label>
+                        <label class="row"
+                            >Blinking colon<input id="blink" type="checkbox" class="sw"
+                        /></label>
+                    </div>
+                    <div class="card">
+                        <h2>Look</h2>
+                        <div class="swatches" id="swatches"></div>
+                        <label class="row">Brightness <output id="brt-v">–</output></label>
+                        <input id="brt" type="range" min="1" max="100" />
+                    </div>
+                    <div class="card">
+                        <h2>Effect</h2>
+                        <p class="hint">Animates the colour of the lit segments.</p>
+                        <label class="row"
+                            >Enabled<input id="fx-en" type="checkbox" class="sw"
+                        /></label>
+                        <label class="row"
+                            >Effect
+                            <select id="fx">
+                                <optgroup label="Colour">
+                                    <option value="color_cycle">Colour cycle</option>
+                                    <option value="rainbow_ring">Rainbow ring</option>
+                                    <option value="xy_flow">Rainbow flow</option>
+                                    <option value="candy">Candy</option>
+                                    <option value="plasma">Plasma</option>
+                                    <option value="galaxy">Galaxy</option>
+                                    <option value="aurora">Aurora</option>
+                                    <option value="sunset">Sunset</option>
+                                </optgroup>
+                                <optgroup label="Motion">
+                                    <option value="ripple">Ripple</option>
+                                    <option value="shockwave">Shockwave</option>
+                                    <option value="comet">Comet</option>
+                                    <option value="rain">Rain</option>
+                                    <option value="fire">Fire</option>
+                                    <option value="twinkle">Twinkle</option>
+                                </optgroup>
+                                <optgroup label="Flash">
+                                    <option value="pulse">Pulse</option>
+                                    <option value="heartbeat">Heartbeat</option>
+                                    <option value="police">Police</option>
+                                </optgroup>
+                            </select>
+                        </label>
+                        <label class="row"
+                            >LEDs on strip<input
+                                id="leds"
+                                type="number"
+                                min="58"
+                                max="100"
+                                inputmode="numeric"
+                        /></label>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Clock -->
+            <section id="tab-clock" class="tab">
+                <div class="grid">
+                    <div class="card">
+                        <h2>Time</h2>
+                        <div class="row">
+                            Format
+                            <div class="seg small" id="fmt">
+                                <button data-v="24">24 h</button><button data-v="12">12 h</button>
+                            </div>
+                        </div>
+                        <label class="row"
+                            >Time zone
+                            <select id="tz">
+                                <option value="UTC0">UTC</option>
+                                <option value="GMT0BST,M3.5.0/1,M10.5.0">London</option>
+                                <option value="CET-1CEST,M3.5.0,M10.5.0/3">Central Europe</option>
+                                <option value="MSK-3">Moscow (UTC+3)</option>
+                                <option value="GST-4">Gulf (UTC+4)</option>
+                                <option value="PKT-5">Pakistan (UTC+5)</option>
+                                <option value="IST-5:30">India (UTC+5:30)</option>
+                                <option value="BST-6">Bangladesh (UTC+6)</option>
+                                <option value="ICT-7">Indochina (UTC+7)</option>
+                                <option value="CST-8">China, Singapore (UTC+8)</option>
+                                <option value="JST-9">Japan, Korea (UTC+9)</option>
+                                <option value="AEST-10AEDT,M10.1.0,M4.1.0/3">Australia East</option>
+                                <option value="EST5EDT,M3.2.0,M11.1.0">US Eastern</option>
+                                <option value="CST6CDT,M3.2.0,M11.1.0">US Central</option>
+                                <option value="PST8PDT,M3.2.0,M11.1.0">US Pacific</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="card">
+                        <h2>Internet time</h2>
+                        <label class="row"
+                            >NTP server<input
+                                id="ntp"
+                                placeholder="pool.ntp.org"
+                                autocapitalize="off"
+                                spellcheck="false"
+                        /></label>
+                        <div class="actions">
+                            <button id="ntp-sync" class="btn">Sync now</button>
+                        </div>
+                        <p class="hint">
+                            The clock syncs on its own whenever the device joins a network.
+                        </p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Network -->
+            <section id="tab-network" class="tab">
+                <div class="grid">
+                    <div class="card">
+                        <h2>Status</h2>
+                        <dl class="kv">
+                            <dt>Network</dt>
+                            <dd id="n-ssid">–</dd>
+                            <dt>IP address</dt>
+                            <dd id="n-ip" class="mono">–</dd>
+                            <dt>Signal</dt>
+                            <dd id="n-rssi">–</dd>
+                            <dt>Address</dt>
+                            <dd id="n-addr" class="mono">–</dd>
+                            <dt>Access point</dt>
+                            <dd id="n-ap">–</dd>
+                        </dl>
+                    </div>
+                    <div class="card">
+                        <h2>Nearby networks <button id="scan" class="btn small">Scan</button></h2>
+                        <ul id="scan-list" class="list">
+                            <li class="empty">Press Scan to look for networks.</li>
+                        </ul>
+                    </div>
+                    <div class="card">
+                        <h2>
+                            Saved networks
+                            <button id="add-show" class="btn small ghost">Add</button>
+                        </h2>
+                        <ul id="saved" class="list">
+                            <li class="empty">None yet.</li>
+                        </ul>
+                        <form id="add-form" class="stack" hidden autocomplete="off">
+                            <input
+                                id="add-ssid"
+                                placeholder="Network name (SSID)"
+                                maxlength="32"
+                                autocapitalize="off"
+                                spellcheck="false"
+                            />
+                            <input
+                                id="add-pass"
+                                type="password"
+                                placeholder="Password (empty if open)"
+                                maxlength="63"
+                            />
+                            <div class="actions">
+                                <button type="button" id="add-cancel" class="btn ghost">
+                                    Cancel</button
+                                ><button class="btn">Save</button>
+                            </div>
+                        </form>
+                    </div>
+                    <div class="card">
+                        <h2>Device</h2>
+                        <div class="row">
+                            Name<span class="inline"
+                                ><input
+                                    id="host"
+                                    maxlength="31"
+                                    autocapitalize="off"
+                                    spellcheck="false"
+                                    aria-label="Device name"
+                                /><button id="host-save" class="btn small ghost">
+                                    Rename
+                                </button></span
+                            >
+                        </div>
+                        <div class="row">
+                            AP password<span class="inline"
+                                ><input
+                                    id="ap-pass"
+                                    type="password"
+                                    maxlength="63"
+                                    placeholder="8-63 characters"
+                                    aria-label="Access point password"
+                                /><button id="ap-save" class="btn small ghost">Change</button></span
+                            >
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- System -->
+            <section id="tab-system" class="tab">
+                <div class="grid">
+                    <div class="card">
+                        <h2>Device</h2>
+                        <dl class="kv">
+                            <dt>Firmware</dt>
+                            <dd id="s-fw">–</dd>
+                            <dt>Built</dt>
+                            <dd id="s-date">–</dd>
+                            <dt>ESP-IDF</dt>
+                            <dd id="s-idf">–</dd>
+                            <dt>Chip</dt>
+                            <dd id="s-chip">–</dd>
+                            <dt>Flash</dt>
+                            <dd id="s-flash">–</dd>
+                            <dt>Boot slot</dt>
+                            <dd id="s-slot">–</dd>
+                            <dt>Last reset</dt>
+                            <dd id="s-reset">–</dd>
+                        </dl>
+                    </div>
+                    <div class="card">
+                        <h2>Health</h2>
+                        <dl class="kv">
+                            <dt>Uptime</dt>
+                            <dd id="s-up">–</dd>
+                            <dt>Temperature</dt>
+                            <dd id="s-temp">–</dd>
+                            <dt>Free memory</dt>
+                            <dd id="s-heap">–</dd>
+                            <dt>Lowest free</dt>
+                            <dd id="s-minheap">–</dd>
+                        </dl>
+                        <div class="meter">
+                            <span>Memory used</span><b id="s-ram-v">–</b><i><u id="s-ram"></u></i>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <h2>Update</h2>
+                        <p class="hint">
+                            Install <span class="mono">WatchTower.bin</span> to update the firmware
+                            and this console together. Not possible over the device's own access
+                            point.
+                        </p>
+                        <label class="drop" id="drop"
+                            ><input id="file" type="file" accept=".bin" hidden /><span
+                                >Choose or drop WatchTower.bin</span
+                            ></label
+                        >
+                        <div class="meter" id="up" hidden>
+                            <span id="up-name"></span><b id="up-v">0%</b><i><u id="up-bar"></u></i>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <h2>Power</h2>
+                        <p class="hint">
+                            Restarting takes a few seconds; this page reconnects by itself.
+                        </p>
+                        <div class="actions">
+                            <button id="reboot" class="btn danger">Restart device</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Logs -->
+            <section id="tab-logs" class="tab">
+                <div class="card logs-card">
+                    <div class="logbar">
+                        <div class="seg small" id="lvl">
+                            <button data-v="" class="on">All</button><button data-v="I">Info</button
+                            ><button data-v="W">Warn</button><button data-v="E">Error</button>
+                        </div>
+                        <span class="grow"></span>
+                        <button id="log-dl" class="btn small ghost">Download</button>
+                        <button id="log-clr" class="btn small ghost">Clear</button>
+                    </div>
+                    <div id="log" class="log mono"></div>
+                </div>
+            </section>
+        </main>
+        <div id="toasts" aria-live="polite"></div>
+    </body>
+</html>

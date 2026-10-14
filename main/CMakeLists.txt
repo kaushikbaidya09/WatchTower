@@ -6,6 +6,7 @@ idf_component_register(
     REQUIRES
         wt_app_log
         wt_app_wifi
+        wt_app_settings
         wt_app_led
         wt_app_web
         wt_app_sound

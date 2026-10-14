@@ -1,0 +1,11 @@
+idf_component_register(
+    SRCS
+        "wt_app_settings.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        nvs_flash
+        wt_app_led
+    PRIV_REQUIRES
+        wt_app_log
+)

@@ -1,10 +1,11 @@
+//=============================================================================
 /*!
-    \file   wt_app_web.c
-    \brief  ESP-IDF HTTP server, AP-hosted management interface.
+    \file    wt_app_web.c
+    \brief   Web server: web console, uploads, WebSocket and captive portal.
+*/
+//=============================================================================
 
-    \details
-    See wt_app_web.h for the HTTP/WebSocket endpoint reference.
- */
+// The endpoints and WebSocket messages are listed in wt_app_web.h.
 
 #include "wt_app_web.h"
 #include "wt_app_log.h"
@@ -12,50 +13,42 @@
 #include "wt_app_settings.h"
 #include "wt_seg_display.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <math.h>
-#include <sys/stat.h>
+#include <unistd.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_http_server.h"
 #include "esp_err.h"
-#include "esp_spiffs.h"
 #include "esp_timer.h"
 #include "esp_ota_ops.h"
-#include "esp_partition.h"
+#include "esp_app_desc.h"
 #include "esp_system.h"
 #include "esp_chip_info.h"
 #include "esp_flash.h"
+#include "esp_heap_caps.h"
 #include "driver/temperature_sensor.h"
 #include "cJSON.h"
 
-/* Captive-portal DNS server */
+// Sockets for the captive-portal DNS responder
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 
-/* No wildcard CORS: every RESP_JSON caller is a state-changing OTA endpoint
-   (see finding #7) and same-origin requests from the served SPA don't need it. */
-#define RESP_JSON(req, json_str)                          \
-    do                                                    \
-    {                                                     \
-        httpd_resp_set_type((req), "application/json");   \
-        httpd_resp_sendstr((req), (json_str));             \
+// No CORS header is sent: only the page served by this device calls these.
+#define RESP_JSON(req, json_str)                                                                   \
+    do                                                                                             \
+    {                                                                                              \
+        httpd_resp_set_type((req), "application/json");                                            \
+        httpd_resp_sendstr((req), (json_str));                                                     \
     } while (0)
 
-#define RESP_ERR(req, msg)                                    \
-    do                                                        \
-    {                                                         \
-        httpd_resp_set_type((req), "application/json");       \
-        httpd_resp_set_status((req), "400 Bad Request");      \
-        httpd_resp_sendstr((req), "{\"error\":\"" msg "\"}"); \
-    } while (0)
-
-typedef esp_err_t (*stream_write_cb_t)(void *ctx, const char *data, size_t len);
+#define UPLOAD_RECV_RETRIES 6 ///< Receive timeouts in a row (10 s each) before an upload is dropped
 
 typedef struct
 {
@@ -66,74 +59,37 @@ typedef struct
     size_t boundary_len;
     char pending[1536];
     size_t pending_len;
+    esp_ota_handle_t ota; ///< Where the file data is written
 } upload_stream_t;
 
 static temperature_sensor_handle_t s_temp_sensor = NULL;
-static bool s_temp_sensor_ready = false;
+static bool s_temp_sensor_ready                  = false;
 
-#define WS_MAX_CLIENTS 4          ///< Maximum allowed clients
-#define WS_MAX_INBOUND_PAYLOAD 8192 ///< Cap on an incoming WS frame before it is malloc'd (DoS guard)
-#define WS_DISPLAY_INTERVAL_MS 50 ///< Web Display fetch refresh rate
-#define WS_FULL_INTERVAL_MS 2000  ///< Full system updates rate (system/wifi/power/logs)
-#define WS_DISPLAY_PAYLOAD 1536   ///< display-only frame ~700 B
-#define WS_PAYLOAD_SIZE 12288     ///< full frame
-#define WS_FULL_TICKS (WS_FULL_INTERVAL_MS / WS_DISPLAY_INTERVAL_MS)
+#define WS_MAX_CLIENTS          8     ///< Most WebSocket clients
+#define WS_MAX_INBOUND_PAYLOAD  8192  ///< Largest frame accepted from a client
+#define WS_DISPLAY_INTERVAL_MS  50    ///< How often the display state is checked
+#define WS_DISPLAY_KEEPALIVE_MS 500   ///< Most time between display frames
+#define WS_FULL_INTERVAL_MS     2000  ///< Interval between full frames
+#define WS_SCAN_PAYLOAD         2048  ///< Buffer for a scan frame
+#define WS_DISPLAY_PAYLOAD      1536  ///< Buffer for a display frame
+#define WS_PAYLOAD_SIZE         12288 ///< Buffer for a full frame
+#define WS_MAX_QUEUED           4     ///< Most broadcasts waiting for the server task
+#define WS_FULL_TICKS           (WS_FULL_INTERVAL_MS / WS_DISPLAY_INTERVAL_MS)
+
+static void format_display_json(char *buf, size_t buf_len, const wt_segd_snapshot_t *snap,
+                                bool with_type);
 
 static httpd_handle_t s_http_server = NULL;
 static int s_ws_fds[WS_MAX_CLIENTS];
 static SemaphoreHandle_t s_ws_mutex = NULL;
 
-/* Set whenever a client (re)connects; tells the next tier-2/3 tick to send
-   settings/wifi/power in full instead of "unchanged" (null), so a freshly
-   connected client always gets an initial snapshot regardless of whether
-   anything has actually changed since the last broadcast. */
+// Set when a client connects, so the next full frame carries settings,
+// WiFi and power in full instead of "unchanged".
 static volatile bool s_ws_new_client = false;
 
 /*!
-    \brief  Marks every WS client slot as free (-1).
- */
-static void ws_clients_init(void)
-{
-    for (int i = 0; i < WS_MAX_CLIENTS; i++)
-        s_ws_fds[i] = -1;
-}
-
-/*!
-    \brief  Registers a newly connected WS client fd in the client table
-            (a no-op if already present) and flags that a new client
-            connected so the next full frame gives it an initial snapshot.
- */
-static void ws_client_add(int fd)
-{
-    if (!s_ws_mutex || xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(50)) != pdTRUE)
-        return;
-
-    bool already = false;
-    int free_slot = -1;
-    for (int i = 0; i < WS_MAX_CLIENTS; i++)
-    {
-        if (s_ws_fds[i] == fd)
-        {
-            already = true;
-            break;
-        }
-        if (free_slot < 0 && s_ws_fds[i] < 0)
-            free_slot = i;
-    }
-    if (!already && free_slot >= 0)
-        s_ws_fds[free_slot] = fd;
-    xSemaphoreGive(s_ws_mutex);
-
-    if (already)
-        return;
-
-    s_ws_new_client = true;
-    wt_log_info("WS client connected fd=%d", fd);
-}
-
-/*!
-    \brief  Removes a WS client fd from the client table on disconnect.
- */
+    \brief  Remove a WebSocket client that has disconnected.
+*/
 static void ws_client_remove(int fd)
 {
     if (!s_ws_mutex || xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(50)) != pdTRUE)
@@ -151,10 +107,21 @@ static void ws_client_remove(int fd)
 }
 
 /*!
-    \brief  Finds the first occurrence of a byte sequence within a buffer
-            (memmem-style search over raw, possibly non-NUL-terminated bytes).
- */
-static const char *find_bytes(const char *buf, size_t buf_len, const char *needle, size_t needle_len)
+    \brief  Answer an HTTP request with 400 and {"error":"<msg>"}.
+*/
+static void resp_error(httpd_req_t *req, const char *msg)
+{
+    char body[96];
+    snprintf(body, sizeof(body), "{\"error\":\"%s\"}", msg);
+    httpd_resp_set_status(req, "400 Bad Request");
+    RESP_JSON(req, body);
+}
+
+/*!
+    \brief  Find a byte sequence in a buffer that need not be NUL-terminated.
+*/
+static const char *find_bytes(const char *buf, size_t buf_len, const char *needle,
+                              size_t needle_len)
 {
     if (!buf || !needle || needle_len == 0 || buf_len < needle_len)
         return NULL;
@@ -168,21 +135,22 @@ static const char *find_bytes(const char *buf, size_t buf_len, const char *needl
 }
 
 /*!
-    \brief  Parses the request's Content-Type header to detect a
-            multipart/form-data upload and extract its MIME boundary.
- */
+    \brief  Read the upload's Content-Type: detect a multipart upload and its
+            boundary.
+*/
 static bool upload_stream_init(httpd_req_t *req, upload_stream_t *st)
 {
     memset(st, 0, sizeof(*st));
 
     char content_type[128];
-    if (httpd_req_get_hdr_value_str(req, "Content-Type", content_type, sizeof(content_type)) != ESP_OK)
+    if (httpd_req_get_hdr_value_str(req, "Content-Type", content_type, sizeof(content_type)) !=
+        ESP_OK)
     {
         return true;
     }
 
     const char *needle = "boundary=";
-    char *boundary = strstr(content_type, needle);
+    char *boundary     = strstr(content_type, needle);
     if (!boundary)
     {
         return true;
@@ -200,18 +168,16 @@ static bool upload_stream_init(httpd_req_t *req, upload_stream_t *st)
     st->boundary[1] = '-';
     memcpy(st->boundary + 2, boundary, raw_len);
     st->boundary[raw_len + 2] = '\0';
-    st->boundary_len = raw_len + 2;
-    st->multipart = true;
+    st->boundary_len          = raw_len + 2;
+    st->multipart             = true;
     return true;
 }
 
 /*!
-    \brief  Flushes buffered multipart body bytes to the write callback,
-            holding back enough trailing bytes to still detect the closing
-            boundary marker on the next call (or emits the final payload
-            up to that marker when \p final_flush is set).
- */
-static esp_err_t upload_stream_flush_payload(upload_stream_t *st, stream_write_cb_t write_cb, void *ctx, bool final_flush)
+    \brief  Pass the received file data on, keeping back the last bytes in case
+            they are the start of the closing boundary.
+*/
+static esp_err_t upload_stream_flush_payload(upload_stream_t *st, bool final_flush)
 {
     if (!st->multipart)
         return ESP_OK;
@@ -229,8 +195,7 @@ static esp_err_t upload_stream_flush_payload(upload_stream_t *st, stream_write_c
 
     if (final_flush)
     {
-        const char *tail = find_bytes(st->pending, st->pending_len,
-                                      tail_marker, tail_len);
+        const char *tail = find_bytes(st->pending, st->pending_len, tail_marker, tail_len);
         if (!tail)
         {
             wt_log_error("Upload tail boundary not found");
@@ -238,11 +203,11 @@ static esp_err_t upload_stream_flush_payload(upload_stream_t *st, stream_write_c
         }
 
         size_t payload_len = (size_t)(tail - st->pending);
-        if (payload_len > 0 && write_cb(ctx, st->pending, payload_len) != ESP_OK)
+        if (payload_len > 0 && esp_ota_write(st->ota, st->pending, payload_len) != ESP_OK)
             return ESP_FAIL;
 
         st->pending_len = 0;
-        st->done = true;
+        st->done        = true;
         return ESP_OK;
     }
 
@@ -250,7 +215,7 @@ static esp_err_t upload_stream_flush_payload(upload_stream_t *st, stream_write_c
         return ESP_OK;
 
     size_t flush_len = st->pending_len - keep_len;
-    if (write_cb(ctx, st->pending, flush_len) != ESP_OK)
+    if (esp_ota_write(st->ota, st->pending, flush_len) != ESP_OK)
         return ESP_FAIL;
 
     memmove(st->pending, st->pending + flush_len, keep_len);
@@ -259,13 +224,12 @@ static esp_err_t upload_stream_flush_payload(upload_stream_t *st, stream_write_c
 }
 
 /*!
-    \brief  Feeds one received chunk into the upload stream parser,
-            skipping the multipart part headers before the first flush.
- */
-static esp_err_t upload_stream_consume(upload_stream_t *st, const char *chunk, size_t chunk_len, stream_write_cb_t write_cb, void *ctx)
+    \brief  Process one received chunk of an upload.
+*/
+static esp_err_t upload_stream_consume(upload_stream_t *st, const char *chunk, size_t chunk_len)
 {
     if (!st->multipart)
-        return write_cb(ctx, chunk, chunk_len);
+        return esp_ota_write(st->ota, chunk, chunk_len);
 
     if ((st->pending_len + chunk_len) > sizeof(st->pending))
     {
@@ -279,8 +243,7 @@ static esp_err_t upload_stream_consume(upload_stream_t *st, const char *chunk, s
     if (!st->headers_skipped)
     {
         static const char sep[] = "\r\n\r\n";
-        const char *hdr_end = find_bytes(st->pending, st->pending_len,
-                                         sep, sizeof(sep) - 1);
+        const char *hdr_end     = find_bytes(st->pending, st->pending_len, sep, sizeof(sep) - 1);
         if (!hdr_end)
             return ESP_OK;
 
@@ -290,166 +253,94 @@ static esp_err_t upload_stream_consume(upload_stream_t *st, const char *chunk, s
         st->headers_skipped = true;
     }
 
-    return upload_stream_flush_payload(st, write_cb, ctx, false);
+    return upload_stream_flush_payload(st, false);
 }
 
 /*!
-    \brief  Flushes the final buffered payload bytes once the upload body
-            has been completely received.
- */
-static esp_err_t upload_stream_finish(upload_stream_t *st, stream_write_cb_t write_cb, void *ctx)
-{
-    if (!st->multipart)
-        return ESP_OK;
-
-    if (!st->headers_skipped)
-    {
-        wt_log_error("Upload part headers missing");
-        return ESP_FAIL;
-    }
-    return upload_stream_flush_payload(st, write_cb, ctx, true);
-}
-
-/*!
-    \brief  Lazily installs and enables the on-chip temperature sensor
-            peripheral on first use.
- */
-static bool ensure_temp_sensor_ready(void)
-{
-    if (s_temp_sensor_ready)
-        return true;
-
-    temperature_sensor_config_t cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
-    esp_err_t err = temperature_sensor_install(&cfg, &s_temp_sensor);
-    if (err != ESP_OK)
-    {
-        wt_log_error("temperature_sensor_install failed: %s", esp_err_to_name(err));
-        s_temp_sensor = NULL;
-        return false;
-    }
-
-    err = temperature_sensor_enable(s_temp_sensor);
-    if (err != ESP_OK)
-    {
-        wt_log_error("temperature_sensor_enable failed: %s", esp_err_to_name(err));
-        temperature_sensor_uninstall(s_temp_sensor);
-        s_temp_sensor = NULL;
-        return false;
-    }
-
-    s_temp_sensor_ready = true;
-    return true;
-}
-
-/*!
-    \brief  Reads the current MCU die temperature in Celsius via the
-            temperature sensor peripheral.
- */
+    \brief  Read the chip temperature in °C, starting the sensor on first use.
+*/
 static bool read_mcu_temperature_c(float *out_celsius)
 {
-    if (!out_celsius)
-        return false;
+    static bool s_temp_sensor_failed = false;
 
-    if (!ensure_temp_sensor_ready())
-        return false;
-
-    esp_err_t err = temperature_sensor_get_celsius(s_temp_sensor, out_celsius);
-    if (err != ESP_OK)
+    // The sensor is started on first use; after a failure it is not retried.
+    if (!s_temp_sensor_ready && !s_temp_sensor_failed)
     {
-        wt_log_error("temperature_sensor_get_celsius failed: %s", esp_err_to_name(err));
-        return false;
+        s_temp_sensor_failed            = true;
+        temperature_sensor_config_t cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
+        esp_err_t err                   = temperature_sensor_install(&cfg, &s_temp_sensor);
+        if (err == ESP_OK)
+        {
+            err = temperature_sensor_enable(s_temp_sensor);
+            if (err != ESP_OK)
+                temperature_sensor_uninstall(s_temp_sensor);
+        }
+        if (err != ESP_OK)
+        {
+            wt_log_error("Temperature sensor start failed: %s", esp_err_to_name(err));
+            s_temp_sensor = NULL;
+        }
+        else
+        {
+            s_temp_sensor_failed = false;
+            s_temp_sensor_ready  = true;
+        }
     }
 
-    return true;
+    return s_temp_sensor_ready &&
+           (temperature_sensor_get_celsius(s_temp_sensor, out_celsius) == ESP_OK);
 }
 
 /*!
-    \brief  Converts a wt_segd_anim_t enum value to its wire-format string
-            name.
- */
-static const char *anim_to_string(wt_segd_anim_t anim)
+    \brief  Copy a string for use inside a JSON string: quotes and backslashes
+            escaped, control characters replaced by spaces.
+*/
+static void json_escape_string(char *dst, size_t dst_len, const char *src)
 {
-    switch (anim)
+    size_t out = 0;
+    if (!dst || dst_len == 0)
     {
-    case WT_SEGD_ANIM_PULSE:
-        return "pulse";
-    case WT_SEGD_ANIM_RAINBOW:
-        return "rainbow";
-    case WT_SEGD_ANIM_WAVE:
-        return "wave";
-    case WT_SEGD_ANIM_COLOR_FLOW:
-        return "colorflow";
-    case WT_SEGD_ANIM_SOLID:
-    default:
-        return "solid";
+        return;
     }
+    while (src && *src && (out + 2) < dst_len)
+    {
+        unsigned char c = (unsigned char)*src++;
+        if (c == '"' || c == '\\')
+        {
+            dst[out++] = '\\';
+            dst[out++] = (char)c;
+        }
+        else
+        {
+            dst[out++] = (c < 0x20) ? ' ' : (char)c;
+        }
+    }
+    dst[out] = '\0';
 }
 
 /*!
-    \brief  Converts a wt_segd_mode_t enum value to its wire-format string
-            name.
- */
+    \brief  Name of a display mode as used in the messages.
+*/
 static const char *mode_to_string(wt_segd_mode_t mode)
 {
     switch (mode)
     {
-    case WT_SEGD_MODE_TIME:
-        return "time";
-    case WT_SEGD_MODE_TEXT:
-        return "text";
-    case WT_SEGD_MODE_RAW:
-        return "raw";
-    case WT_SEGD_MODE_NUMBER:
-    default:
-        return "number";
+        case WT_SEGD_MODE_TIME:
+            return "time";
+        case WT_SEGD_MODE_TEXT:
+            return "text";
+        case WT_SEGD_MODE_RAW:
+            return "raw";
+        case WT_SEGD_MODE_NUMBER:
+        default:
+            return "number";
     }
 }
 
 /*!
-    \brief  Builds a [red,green,blue] cJSON array from a wt_segd_color_t.
- */
-static cJSON *color_to_json(wt_segd_color_t color)
-{
-    cJSON *arr = cJSON_CreateArray();
-    cJSON_AddItemToArray(arr, cJSON_CreateNumber(color.red));
-    cJSON_AddItemToArray(arr, cJSON_CreateNumber(color.green));
-    cJSON_AddItemToArray(arr, cJSON_CreateNumber(color.blue));
-    return arr;
-}
-
-/*!
-    \brief  Compares two wt_segd_color_t values for equality.
- */
-static bool color_eq(wt_segd_color_t a, wt_segd_color_t b)
-{
-    return (a.red == b.red) && (a.green == b.green) && (a.blue == b.blue);
-}
-
-/*!
-    \brief  true if every per-segment color in the snapshot equals color_on,
-            i.e. the common "single color for the whole display" case where
-            sending the full per-digit-per-segment color array would be
-            redundant the client can just fall back to color_on.
- */
-static bool digit_colors_all_match_color_on(const wt_segd_snapshot_t *snap)
-{
-    for (int di = 0; di < WT_SEGD_NUM_DIGITS; di++)
-    {
-        for (int si = 0; si < WT_SEGD_SEGS_PER_DIGIT; si++)
-        {
-            if (!color_eq(snap->digit_color[di][si], snap->request.color_on))
-            {
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
-/*!
-    \brief  Uppercases and filters an input string down to the display's
-            supported character set (A-Z, 0-9, space, underscore, hyphen).
- */
+    \brief  Upper-case text and keep only characters the display can show
+            (A-Z, 0-9, space, '_' and '-').
+*/
 static void sanitize_display_text(const char *src, char *dst, size_t dst_len)
 {
     if (!dst || dst_len == 0)
@@ -465,9 +356,8 @@ static void sanitize_display_text(const char *src, char *dst, size_t dst_len)
         {
             ch = (char)(ch - ('a' - 'A'));
         }
-        if (((ch >= 'A') && (ch <= 'Z')) ||
-            ((ch >= '0') && (ch <= '9')) ||
-            (ch == ' ') || (ch == '_') || (ch == '-'))
+        if (((ch >= 'A') && (ch <= 'Z')) || ((ch >= '0') && (ch <= '9')) || (ch == ' ') ||
+            (ch == '_') || (ch == '-'))
         {
             dst[out++] = ch;
         }
@@ -475,46 +365,41 @@ static void sanitize_display_text(const char *src, char *dst, size_t dst_len)
     dst[out] = '\0';
 }
 
-/* Note: no local "apply settings to display now" helper here wt_settings_set()
-   already notifies the app_main display-request loop (see wt_app_settings.c), which rebuilds and
-   pushes the wt_segd_request_t from the same wt_settings_t. Duplicating that
-   mapping here would just be a second producer racing to write the same
-   single-slot queue. */
+// Settings are not applied to the display here: wt_settings_set() wakes
+// the display-request loop, which builds the display request itself.
 
 typedef enum
 {
-    WT_SF_STR,           ///< Plain string, strlcpy both directions
-    WT_SF_STR_SANITIZED, ///< String, sanitized on parse (see sanitize_display_text)
+    WT_SF_STR,           ///< Text
+    WT_SF_STR_SANITIZED, ///< Text limited to characters the display can show
     WT_SF_BOOL,
     WT_SF_U8,
     WT_SF_U16,
     WT_SF_I16,
-    WT_SF_U8_PCT255, ///< uint8_t 0-255 struct field <-> wire percent 0-100
-    WT_SF_COLOR_HEX, ///< color_hex[] string; parsing also derives color_on RGB
+    WT_SF_U8_PCT255, ///< 0-255 value sent as a percentage
+    WT_SF_COLOR_HEX, ///< "#rrggbb" color, also sets color_on
 } wt_settings_field_type_t;
 
 typedef struct
 {
     const char *key;
     wt_settings_field_type_t type;
-    size_t offset; ///< offsetof(wt_settings_t, member)
-    size_t size;   ///< sizeof(member) destination buffer size for strings
+    size_t offset; ///< Position of the member in wt_settings_t
+    size_t size;   ///< Size of the member
 } wt_settings_field_t;
 
-/* sizeof-of-member below never dereferences the null pointer: sizeof's
-   operand is not evaluated (C11 6.5.3.4), so this is the standard,
-   allocation-free "size of a struct member without an instance" idiom. */
+// Describes one wt_settings_t member: wire key, type, offset and size.
+// clang-format off
 #define WT_SF(key_, type_, member_) \
-    { (key_), (type_), offsetof(wt_settings_t, member_), sizeof(((wt_settings_t *)0)->member_) }
+    {(key_), (type_), offsetof(wt_settings_t, member_), sizeof(((wt_settings_t *)0)->member_)}
+// clang-format on
 
 static const wt_settings_field_t s_settings_fields[] = {
     WT_SF("color", WT_SF_COLOR_HEX, color_hex),
     WT_SF("brightness", WT_SF_U8_PCT255, intensity),
     WT_SF("anim_colon", WT_SF_BOOL, colon_blink),
     WT_SF("anim_scroll", WT_SF_BOOL, anim_scroll),
-    WT_SF("anim_pulse", WT_SF_BOOL, anim_pulse),
     WT_SF("anim_transition", WT_SF_BOOL, anim_transition),
-    WT_SF("reaction_effect", WT_SF_STR, reaction_effect),
     WT_SF("display_mode", WT_SF_STR, display_mode),
     WT_SF("display_value", WT_SF_I16, display_value),
     WT_SF("display_text", WT_SF_STR_SANITIZED, display_text),
@@ -539,541 +424,306 @@ static const wt_settings_field_t s_settings_fields[] = {
 #define WT_SETTINGS_FIELD_COUNT (sizeof(s_settings_fields) / sizeof(s_settings_fields[0]))
 
 /*!
-    \brief  Looks up a settings wire field descriptor by its JSON key name.
- */
-static const wt_settings_field_t *find_settings_field(const char *key)
+    \brief  Read a JSON number as an integer limited to lo..hi.
+*/
+static int clamp_number(const cJSON *val, int lo, int hi)
 {
-    for (size_t i = 0; i < WT_SETTINGS_FIELD_COUNT; i++)
+    double d = cJSON_GetNumberValue(val);
+    if (!(d >= lo)) // also true for NaN
     {
-        if (strcmp(s_settings_fields[i].key, key) == 0)
-        {
-            return &s_settings_fields[i];
-        }
+        return lo;
     }
-    return NULL;
+    if (d > hi)
+    {
+        return hi;
+    }
+    return (int)d;
 }
 
 /*!
-    \brief  Apply one JSON value onto the matching wt_settings_t member,
-            per the field's declared wire type.
- */
+    \brief  Store one received value in its setting.
+*/
 static void settings_field_apply(wt_settings_t *s, const wt_settings_field_t *f, cJSON *val)
 {
     void *field = (uint8_t *)s + f->offset;
 
     switch (f->type)
     {
-    case WT_SF_STR:
-        if (cJSON_IsString(val))
-        {
-            strlcpy((char *)field, cJSON_GetStringValue(val), f->size);
-        }
-        break;
-    case WT_SF_STR_SANITIZED:
-        if (cJSON_IsString(val))
-        {
-            sanitize_display_text(cJSON_GetStringValue(val), (char *)field, f->size);
-        }
-        break;
-    case WT_SF_BOOL:
-        *(bool *)field = cJSON_IsTrue(val);
-        break;
-    case WT_SF_U8:
-        *(uint8_t *)field = (uint8_t)cJSON_GetNumberValue(val);
-        break;
-    case WT_SF_U16:
-        *(uint16_t *)field = (uint16_t)cJSON_GetNumberValue(val);
-        break;
-    case WT_SF_I16:
-        *(int16_t *)field = (int16_t)cJSON_GetNumberValue(val);
-        break;
-    case WT_SF_U8_PCT255:
-        *(uint8_t *)field = (uint8_t)(((int)cJSON_GetNumberValue(val) * 255) / 100);
-        break;
-    case WT_SF_COLOR_HEX:
-        if (cJSON_IsString(val))
-        {
-            const char *hex = cJSON_GetStringValue(val);
-            strlcpy((char *)field, hex, f->size);
-            wt_settings_parse_hex_color(hex, &s->color_on.red, &s->color_on.green, &s->color_on.blue);
-        }
-        break;
+        case WT_SF_STR:
+            if (cJSON_IsString(val))
+            {
+                strlcpy((char *)field, cJSON_GetStringValue(val), f->size);
+            }
+            break;
+        case WT_SF_STR_SANITIZED:
+            if (cJSON_IsString(val))
+            {
+                sanitize_display_text(cJSON_GetStringValue(val), (char *)field, f->size);
+            }
+            break;
+        // A value of the wrong type is ignored, and numbers are limited to
+        // the field's range.
+        case WT_SF_BOOL:
+            if (cJSON_IsBool(val))
+            {
+                *(bool *)field = cJSON_IsTrue(val);
+            }
+            break;
+        case WT_SF_U8:
+            if (cJSON_IsNumber(val))
+            {
+                *(uint8_t *)field = (uint8_t)clamp_number(val, 0, UINT8_MAX);
+            }
+            break;
+        case WT_SF_U16:
+            if (cJSON_IsNumber(val))
+            {
+                *(uint16_t *)field = (uint16_t)clamp_number(val, 0, UINT16_MAX);
+            }
+            break;
+        case WT_SF_I16:
+            if (cJSON_IsNumber(val))
+            {
+                *(int16_t *)field = (int16_t)clamp_number(val, INT16_MIN, INT16_MAX);
+            }
+            break;
+        case WT_SF_U8_PCT255:
+            if (cJSON_IsNumber(val))
+            {
+                // Rounded so a percentage converts to 0-255 and back unchanged.
+                *(uint8_t *)field = (uint8_t)((clamp_number(val, 0, 100) * 255 + 50) / 100);
+            }
+            break;
+        case WT_SF_COLOR_HEX:
+            if (cJSON_IsString(val))
+            {
+                const char *hex = cJSON_GetStringValue(val);
+                strlcpy((char *)field, hex, f->size);
+                wt_settings_parse_hex_color(hex, &s->color_on.red, &s->color_on.green,
+                                            &s->color_on.blue);
+            }
+            break;
     }
 }
 
 /*!
-    \brief  Merge every wire key present in \p j onto \p s, table-driven.
-            Unknown keys and keys not present in \p j are ignored.
- */
-static void settings_apply_json(wt_settings_t *s, cJSON *j)
-{
-    for (size_t i = 0; i < WT_SETTINGS_FIELD_COUNT; i++)
-    {
-        cJSON *val = cJSON_GetObjectItem(j, s_settings_fields[i].key);
-        if (val)
-        {
-            settings_field_apply(s, &s_settings_fields[i], val);
-        }
-    }
-}
-
-/*!
-    \brief  Add one wt_settings_t member onto a cJSON object, per the
-            field's declared wire type.
- */
+    \brief  Add one setting to a message.
+*/
 static void settings_field_to_json(cJSON *obj, const wt_settings_t *s, const wt_settings_field_t *f)
 {
     const void *field = (const uint8_t *)s + f->offset;
 
     switch (f->type)
     {
-    case WT_SF_STR:
-    case WT_SF_STR_SANITIZED:
-        cJSON_AddStringToObject(obj, f->key, (const char *)field);
-        break;
-    case WT_SF_COLOR_HEX:
-    {
-        const char *hex = *(const char *)field ? (const char *)field : "#00c8ff";
-        cJSON_AddStringToObject(obj, f->key, hex);
-        break;
-    }
-    case WT_SF_BOOL:
-        cJSON_AddBoolToObject(obj, f->key, *(const bool *)field);
-        break;
-    case WT_SF_U8:
-        cJSON_AddNumberToObject(obj, f->key, *(const uint8_t *)field);
-        break;
-    case WT_SF_U16:
-        cJSON_AddNumberToObject(obj, f->key, *(const uint16_t *)field);
-        break;
-    case WT_SF_I16:
-        cJSON_AddNumberToObject(obj, f->key, *(const int16_t *)field);
-        break;
-    case WT_SF_U8_PCT255:
-        cJSON_AddNumberToObject(obj, f->key, ((int)(*(const uint8_t *)field) * 100) / 255);
-        break;
-    }
-}
-
-/*!
-    \brief  Build the full "settings" wire object (every field in the table).
- */
-static cJSON *settings_to_json_object(const wt_settings_t *s)
-{
-    cJSON *obj = cJSON_CreateObject();
-    for (size_t i = 0; i < WT_SETTINGS_FIELD_COUNT; i++)
-    {
-        settings_field_to_json(obj, s, &s_settings_fields[i]);
-    }
-    return obj;
-}
-
-#define SPIFFS_BASE "/spiffs"
-#define INDEX_HTML SPIFFS_BASE "/index.html"
-#define STYLE_CSS SPIFFS_BASE "/style.css"
-#define APP_JS SPIFFS_BASE "/app.js"
-
-static bool spiffs_mounted = false;
-
-/*!
-    \brief  Mounts (formatting first if needed) the SPIFFS partition;
-            idempotent across repeated calls.
- */
-static void mount_spiffs(void)
-{
-    if (spiffs_mounted)
-        return;
-    esp_vfs_spiffs_conf_t conf = {
-        .base_path = SPIFFS_BASE,
-        .partition_label = "spiffs",
-        .max_files = 5,
-        .format_if_mount_failed = true,
-    };
-    esp_err_t ret = esp_vfs_spiffs_register(&conf);
-    if (ret == ESP_OK || ret == ESP_ERR_INVALID_STATE)
-    {
-        spiffs_mounted = true;
-        wt_log_info("SPIFFS mounted");
-    }
-    else
-    {
-        wt_log_error("SPIFFS mount failed: %d", ret);
-    }
-}
-
-/*!
-    \brief  Serves a file from SPIFFS to the HTTP client using chunked
-            transfer, or a 404 if it doesn't exist.
- */
-static esp_err_t serve_file(httpd_req_t *req, const char *path, const char *content_type)
-{
-    FILE *f = fopen(path, "r");
-    if (!f)
-    {
-        httpd_resp_send_404(req);
-        return ESP_FAIL;
-    }
-    httpd_resp_set_type(req, content_type);
-    char chunk[512];
-    size_t n;
-    while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0)
-    {
-        if (httpd_resp_send_chunk(req, chunk, (ssize_t)n) != ESP_OK)
+        case WT_SF_STR:
+        case WT_SF_STR_SANITIZED:
+            cJSON_AddStringToObject(obj, f->key, (const char *)field);
+            break;
+        case WT_SF_COLOR_HEX:
+        {
+            const char *hex = *(const char *)field ? (const char *)field : "#00c8ff";
+            cJSON_AddStringToObject(obj, f->key, hex);
+            break;
+        }
+        case WT_SF_BOOL:
+            cJSON_AddBoolToObject(obj, f->key, *(const bool *)field);
+            break;
+        case WT_SF_U8:
+            cJSON_AddNumberToObject(obj, f->key, *(const uint8_t *)field);
+            break;
+        case WT_SF_U16:
+            cJSON_AddNumberToObject(obj, f->key, *(const uint16_t *)field);
+            break;
+        case WT_SF_I16:
+            cJSON_AddNumberToObject(obj, f->key, *(const int16_t *)field);
+            break;
+        case WT_SF_U8_PCT255:
+            cJSON_AddNumberToObject(obj, f->key,
+                                    ((int)(*(const uint8_t *)field) * 100 + 127) / 255);
             break;
     }
-    fclose(f);
-    httpd_resp_send_chunk(req, NULL, 0);
-    return ESP_OK;
 }
 
-/*!
-    \brief  GET / handler: serves the SPA's index.html from SPIFFS, or a
-            minimal fallback placeholder page if it hasn't been uploaded yet.
- */
-static esp_err_t handler_root(httpd_req_t *req)
+// The web console, gzip-compressed and linked into the firmware by
+// components/wt_app_web/CMakeLists.txt.
+extern const uint8_t _binary_index_html_gz_start[], _binary_index_html_gz_end[];
+extern const uint8_t _binary_style_css_gz_start[], _binary_style_css_gz_end[];
+extern const uint8_t _binary_app_js_gz_start[], _binary_app_js_gz_end[];
+
+/// A web console file: its URL, content type and compressed bytes.
+typedef struct
 {
-    struct stat st;
-    if (stat(INDEX_HTML, &st) == 0)
+    const char *uri;
+    const char *type;
+    const uint8_t *start;
+    const uint8_t *end;
+} web_file_t;
+
+static const web_file_t s_web_files[] = {
+    {"/", "text/html", _binary_index_html_gz_start, _binary_index_html_gz_end},
+    {"/style.css", "text/css", _binary_style_css_gz_start, _binary_style_css_gz_end},
+    {"/app.js", "application/javascript", _binary_app_js_gz_start, _binary_app_js_gz_end},
+};
+
+/*!
+    \brief  GET of a web console file (user_ctx is its web_file_t), sent
+            gzip-compressed from the firmware image.
+*/
+static esp_err_t handler_web_file(httpd_req_t *req)
+{
+    const web_file_t *file = (const web_file_t *)req->user_ctx;
+
+    // The files change only with the firmware, so the ETag is taken from the
+    // firmware's hash. no-cache makes the browser check it on every load: an
+    // update shows at once, while an unchanged file costs a short 304.
+    char hash[9], etag[12], match[16] = "";
+    esp_app_get_elf_sha256(hash, sizeof(hash));
+    snprintf(etag, sizeof(etag), "\"%s\"", hash);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_set_hdr(req, "ETag", etag);
+    if (httpd_req_get_hdr_value_str(req, "If-None-Match", match, sizeof(match)) == ESP_OK &&
+        strcmp(match, etag) == 0)
     {
-        return serve_file(req, INDEX_HTML, "text/html");
+        httpd_resp_set_status(req, "304 Not Modified");
+        return httpd_resp_send(req, NULL, 0);
     }
-    /* Fallback minimal redirect page */
-    const char *fb = "<html><body><h2>WatchTower</h2>"
-                     "<p>Upload index.html via OTA tab.</p></body></html>";
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_sendstr(req, fb);
-    return ESP_OK;
+
+    httpd_resp_set_type(req, file->type);
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    return httpd_resp_send(req, (const char *)file->start, file->end - file->start);
 }
 
 /*!
-    \brief  GET /style.css handler: serves the SPA stylesheet from SPIFFS
-            with a short cache lifetime.
- */
-static esp_err_t handler_style_css(httpd_req_t *req)
+    \brief  POST /api/ota: firmware update. The image (which also carries the
+            web console) is written to the next update partition, made the
+            boot partition, and the device restarts. Refused from clients on
+            the access point (192.168.4.x).
+*/
+static esp_err_t handler_ota(httpd_req_t *req)
 {
-    httpd_resp_set_hdr(req, "Cache-Control", "max-age=300");
-    return serve_file(req, STYLE_CSS, "text/css");
-}
-
-/*!
-    \brief  GET /app.js handler: serves the SPA script from SPIFFS with a
-            short cache lifetime.
- */
-static esp_err_t handler_app_js(httpd_req_t *req)
-{
-    httpd_resp_set_hdr(req, "Cache-Control", "max-age=300");
-    return serve_file(req, APP_JS, "application/javascript");
-}
-
-/*!
-    \brief  upload_stream_t write callback that appends received bytes to
-            an in-progress OTA update.
- */
-static esp_err_t ota_write_cb(void *ctx, const char *data, size_t len)
-{
-    esp_ota_handle_t ota_handle = *(esp_ota_handle_t *)ctx;
-    return esp_ota_write(ota_handle, data, len);
-}
-
-/*!
-    \brief  upload_stream_t write callback that appends received bytes to
-            an open SPIFFS file.
- */
-static esp_err_t file_write_cb(void *ctx, const char *data, size_t len)
-{
-    FILE *f = (FILE *)ctx;
-    return (fwrite(data, 1, len, f) == len) ? ESP_OK : ESP_FAIL;
-}
-
-/*!
-    \brief  True if the connected client's peer address is on the AP subnet
-            (192.168.4.0/24) rather than the trusted STA network.
-            Fails closed (treats "unknown" as AP) if the peer can't be read.
- */
-static bool ota_client_is_on_ap_subnet(httpd_req_t *req)
-{
-    struct sockaddr_in addr;
-    socklen_t len = sizeof(addr);
-    int fd = httpd_req_to_sockfd(req);
-    if (fd < 0 || getpeername(fd, (struct sockaddr *)&addr, &len) != 0)
+    // The server socket is IPv6-capable, so an IPv4 client is reported as an
+    // IPv4-mapped IPv6 address (::ffff:a.b.c.d). An address that cannot be
+    // read is treated as coming from the access point.
+    struct sockaddr_storage addr;
+    socklen_t addr_len   = sizeof(addr);
+    int fd               = httpd_req_to_sockfd(req);
+    const uint8_t *octet = NULL;
+    if (fd >= 0 && getpeername(fd, (struct sockaddr *)&addr, &addr_len) == 0)
     {
-        return true;
+        if (addr.ss_family == AF_INET)
+            octet = (const uint8_t *)&((const struct sockaddr_in *)&addr)->sin_addr.s_addr;
+        else if (addr.ss_family == AF_INET6)
+            octet = &((const struct sockaddr_in6 *)&addr)->sin6_addr.s6_addr[12];
     }
-    const uint8_t *octet = (const uint8_t *)&addr.sin_addr.s_addr;
-    return (octet[0] == 192) && (octet[1] == 168) && (octet[2] == 4);
-}
-
-/*!
-    \brief  Reject OTA requests arriving from the (untrusted) AP interface.
-            No token check anyone on the trusted STA network can push an
-            update, same as anyone on that network can use the WS commands.
- */
-static bool ota_request_authorized(httpd_req_t *req)
-{
-    if (ota_client_is_on_ap_subnet(req))
+    if (!octet || (octet[0] == 192 && octet[1] == 168 && octet[2] == 4))
     {
         wt_log_warn("OTA rejected: request from AP interface");
-        return false;
-    }
-    return true;
-}
-
-/*!
-    \brief  Handles the firmware branch of POST /api/ota: streams the
-            multipart body into the next OTA partition, sets it as the
-            boot partition, and reboots on success.
- */
-static esp_err_t handler_ota_firmware(httpd_req_t *req)
-{
-    if (!ota_request_authorized(req))
-    {
-        RESP_ERR(req, "unauthorized");
+        resp_error(req, "unauthorized");
         return ESP_OK;
     }
+    wt_log_info("OTA: %d bytes incoming", req->content_len);
 
-    wt_log_info("OTA firmware: %d bytes incoming", req->content_len);
-
-    const esp_partition_t *update_part =
-        esp_ota_get_next_update_partition(NULL);
+    const esp_partition_t *update_part = esp_ota_get_next_update_partition(NULL);
+    upload_stream_t stream;
     if (!update_part)
     {
-        RESP_ERR(req, "no OTA partition");
+        resp_error(req, "no OTA partition");
         return ESP_OK;
     }
-
-    esp_ota_handle_t ota_handle;
-    esp_err_t err = esp_ota_begin(update_part,
-                                  OTA_WITH_SEQUENTIAL_WRITES,
-                                  &ota_handle);
-    if (err != ESP_OK)
+    if (!upload_stream_init(req, &stream) || req->content_len == 0)
     {
-        RESP_ERR(req, "ota_begin failed");
+        resp_error(req, "invalid upload");
         return ESP_OK;
     }
-
-    upload_stream_t stream;
-    if (!upload_stream_init(req, &stream))
+    if (esp_ota_begin(update_part, OTA_WITH_SEQUENTIAL_WRITES, &stream.ota) != ESP_OK)
     {
-        esp_ota_abort(ota_handle);
-        RESP_ERR(req, "invalid upload content-type");
+        resp_error(req, "ota_begin failed");
         return ESP_OK;
     }
 
+    // Receive the body, passing the file data to the update partition.
+    const char *error = NULL;
     char buf[1024];
-    int remaining = req->content_len;
-    bool ota_ok = true;
-    bool wrote_bytes = false;
-
-    while (remaining > 0)
+    size_t remaining = req->content_len;
+    int timeouts     = 0;
+    while (remaining > 0 && !error)
     {
-        int to_recv = (remaining < (int)sizeof(buf))
-                          ? remaining
-                          : (int)sizeof(buf);
-        int n = httpd_req_recv(req, buf, to_recv);
+        int to_recv = (remaining < sizeof(buf)) ? (int)remaining : (int)sizeof(buf);
+        int n       = httpd_req_recv(req, buf, to_recv);
         if (n <= 0)
         {
-            if (n == HTTPD_SOCK_ERR_TIMEOUT)
+            // Give up on a client that stops sending.
+            if (n == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < UPLOAD_RECV_RETRIES)
                 continue;
-            ota_ok = false;
+            error = "receive failed";
             break;
         }
-        if (upload_stream_consume(&stream, buf, (size_t)n, ota_write_cb, &ota_handle) != ESP_OK)
-        {
-            ota_ok = false;
-            break;
-        }
-        wrote_bytes = true;
-        remaining -= n;
+        timeouts = 0;
+        if (upload_stream_consume(&stream, buf, (size_t)n) != ESP_OK)
+            error = "write error";
+        remaining -= (size_t)n;
     }
 
-    if (ota_ok && upload_stream_finish(&stream, ota_write_cb, &ota_handle) != ESP_OK)
-        ota_ok = false;
+    // Pass on the data held back while looking for the closing boundary.
+    if (!error && stream.multipart &&
+        (!stream.headers_skipped || upload_stream_flush_payload(&stream, true) != ESP_OK))
+        error = "write error";
 
-    if (!ota_ok || !wrote_bytes)
+    if (error)
     {
-        esp_ota_abort(ota_handle);
-        RESP_ERR(req, "ota write/end failed");
+        esp_ota_abort(stream.ota);
+        wt_log_error("OTA: %s", error);
+        resp_error(req, error);
         return ESP_OK;
     }
 
-    err = esp_ota_end(ota_handle);
+    esp_err_t err = esp_ota_end(stream.ota);
     if (err != ESP_OK)
     {
         wt_log_error("esp_ota_end failed: %s", esp_err_to_name(err));
-        RESP_ERR(req, "ota write/end failed");
+        resp_error(req, "not a valid firmware image");
         return ESP_OK;
     }
-
     if (esp_ota_set_boot_partition(update_part) != ESP_OK)
     {
-        RESP_ERR(req, "set boot partition failed");
+        resp_error(req, "set boot partition failed");
         return ESP_OK;
     }
 
-    wt_log_info("OTA firmware done rebooting in 2 s");
+    wt_log_info("OTA done, restarting in 2 s");
     RESP_JSON(req, "{\"ok\":true,\"reboot\":true}");
+    wt_settings_flush();
     vTaskDelay(pdMS_TO_TICKS(2000));
     esp_restart();
     return ESP_OK;
 }
 
 /*!
-    \brief  Streams a multipart upload body into a SPIFFS asset file
-            (index.html/style.css/app.js), used by the non-firmware
-            POST /api/ota targets.
- */
-static esp_err_t spiffs_file_upload(httpd_req_t *req, const char *spiffs_path,
-                                    const char *label)
-{
-    if (!ota_request_authorized(req))
-    {
-        RESP_ERR(req, "unauthorized");
-        return ESP_OK;
-    }
-
-    wt_log_info("OTA %s: %d bytes incoming", label, req->content_len);
-
-    upload_stream_t stream;
-    if (!upload_stream_init(req, &stream))
-    {
-        RESP_ERR(req, "invalid upload content-type");
-        return ESP_OK;
-    }
-
-    FILE *f = fopen(spiffs_path, "w");
-    if (!f)
-    {
-        RESP_ERR(req, "cannot open spiffs file");
-        return ESP_OK;
-    }
-
-    char buf[512];
-    int remaining = req->content_len;
-    bool ok = true;
-
-    while (remaining > 0)
-    {
-        int to_recv = remaining < (int)sizeof(buf) ? remaining : (int)sizeof(buf);
-        int n = httpd_req_recv(req, buf, to_recv);
-        if (n <= 0)
-        {
-            if (n == HTTPD_SOCK_ERR_TIMEOUT)
-                continue;
-            ok = false;
-            break;
-        }
-        if (upload_stream_consume(&stream, buf, (size_t)n, file_write_cb, f) != ESP_OK)
-        {
-            ok = false;
-            break;
-        }
-        remaining -= n;
-    }
-
-    if (ok && upload_stream_finish(&stream, file_write_cb, f) != ESP_OK)
-        ok = false;
-
-    fclose(f);
-
-    if (ok)
-    {
-        wt_log_info("OTA %s: done", label);
-        RESP_JSON(req, "{\"ok\":true}");
-    }
-    else
-    {
-        wt_log_error("OTA %s: write error", label);
-        RESP_JSON(req, "{\"ok\":false,\"error\":\"write error\"}");
-    }
-    return ESP_OK;
-}
-
-/*!
-    \brief  POST /api/ota handler: dispatches the upload to the firmware
-            OTA path or the matching SPIFFS asset target based on the
-            ?target= query parameter.
- */
-static esp_err_t handler_ota(httpd_req_t *req)
-{
-    static const struct
-    {
-        const char *target;
-        const char *spiffs_path;
-    } s_ota_targets[] = {
-        {"index.html", INDEX_HTML},
-        {"style.css", STYLE_CSS},
-        {"app.js", APP_JS},
-    };
-
-    char query[64] = {0};
-    char target[32] = {0};
-    httpd_req_get_url_query_str(req, query, sizeof(query));
-    httpd_query_key_value(query, "target", target, sizeof(target));
-
-    if (strcmp(target, "firmware") == 0)
-    {
-        return handler_ota_firmware(req);
-    }
-
-    for (size_t i = 0; i < sizeof(s_ota_targets) / sizeof(s_ota_targets[0]); i++)
-    {
-        if (strcmp(target, s_ota_targets[i].target) == 0)
-        {
-            return spiffs_file_upload(req, s_ota_targets[i].spiffs_path, s_ota_targets[i].target);
-        }
-    }
-
-    RESP_ERR(req, "unknown ota target");
-    return ESP_OK;
-}
-
-/*!
-    \brief  Sends a single WS text frame back to the requesting client.
- */
+    \brief  Send a text frame to the client that sent the request.
+*/
 static void ws_reply(httpd_req_t *req, const char *text)
 {
     httpd_ws_frame_t pkt = {
-        .final = true,
+        .final      = true,
         .fragmented = false,
-        .type = HTTPD_WS_TYPE_TEXT,
-        .payload = (uint8_t *)text,
-        .len = strlen(text),
+        .type       = HTTPD_WS_TYPE_TEXT,
+        .payload    = (uint8_t *)text,
+        .len        = strlen(text),
     };
     esp_err_t err = httpd_ws_send_frame(req, &pkt);
     if (err != ESP_OK)
     {
-        wt_log_warn("ws_reply: httpd_ws_send_frame failed (%s) len=%u fd=%d",
-                 esp_err_to_name(err), (unsigned)pkt.len, httpd_req_to_sockfd(req));
+        wt_log_warn("ws_reply: httpd_ws_send_frame failed (%s) len=%u fd=%d", esp_err_to_name(err),
+                    (unsigned)pkt.len, httpd_req_to_sockfd(req));
     }
 }
 
 #define WT_WS_PROTO_VERSION 1
 
 /*!
-    \brief  Sent once to a client right after its WS handshake completes.
-            Lets the SPA detect a firmware/UI protocol mismatch (e.g. after
-            a partial OTA of only index.html/app.js) instead of silently
-            rendering with missing fields.
- */
-static void ws_send_hello(httpd_req_t *req)
-{
-    char hello[160];
-    snprintf(hello, sizeof(hello),
-             "{\"type\":\"hello\",\"proto\":%d,"
-             "\"features\":[\"display\",\"wifi\",\"power\",\"settings\",\"logs\"]}",
-             WT_WS_PROTO_VERSION);
-    ws_reply(req, hello);
-}
-
-/*!
-    \brief  Sent once to a client right after ws_send_hello(), immediately after
-            its WS handshake completes. Carries every field that is fixed for the
-            lifetime of the current boot (chip identity, build info, OTA slot,
-            reset reason) so the recurring "full" broadcast (every 2 s, forever)
-            doesn't have to re-serialize and re-send unchanging strings on every
-            tick see build_ws_payload() below, which only carries fields that
-            can actually change after boot.
- */
+    \brief  Send the "info" frame once after a client connects: chip, build
+            and reset details that do not change while the device runs.
+*/
 static void ws_send_info(httpd_req_t *req)
 {
     esp_chip_info_t chip;
@@ -1082,7 +732,8 @@ static void ws_send_info(httpd_req_t *req)
     esp_flash_get_size(NULL, &flash_size);
 
     const esp_partition_t *running = esp_ota_get_running_partition();
-    const esp_partition_t *app1 = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, NULL);
+    const esp_partition_t *app1 =
+        esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, NULL);
     char ota_slot[8] = "app0";
     if (running && app1 && running->address == app1->address)
         strlcpy(ota_slot, "app1", sizeof(ota_slot));
@@ -1090,31 +741,31 @@ static void ws_send_info(httpd_req_t *req)
     const char *reset_reason = "unknown";
     switch (esp_reset_reason())
     {
-    case ESP_RST_POWERON:
-        reset_reason = "power-on";
-        break;
-    case ESP_RST_SW:
-        reset_reason = "software";
-        break;
-    case ESP_RST_PANIC:
-        reset_reason = "panic";
-        break;
-    case ESP_RST_WDT:
-        reset_reason = "watchdog";
-        break;
-    case ESP_RST_DEEPSLEEP:
-        reset_reason = "deep-sleep";
-        break;
-    default:
-        break;
+        case ESP_RST_POWERON:
+            reset_reason = "power-on";
+            break;
+        case ESP_RST_SW:
+            reset_reason = "software";
+            break;
+        case ESP_RST_PANIC:
+            reset_reason = "panic";
+            break;
+        case ESP_RST_WDT:
+            reset_reason = "watchdog";
+            break;
+        case ESP_RST_DEEPSLEEP:
+            reset_reason = "deep-sleep";
+            break;
+        default:
+            break;
     }
-    const char *chip_name =
-        (chip.model == CHIP_ESP32) ? "ESP32" : (chip.model == CHIP_ESP32S2) ? "ESP32-S2"
-                                           : (chip.model == CHIP_ESP32S3)   ? "ESP32-S3"
-                                           : (chip.model == CHIP_ESP32C3)   ? "ESP32-C3"
-                                                                            : "Unknown";
+    const char *chip_name = (chip.model == CHIP_ESP32)     ? "ESP32"
+                            : (chip.model == CHIP_ESP32S2) ? "ESP32-S2"
+                            : (chip.model == CHIP_ESP32S3) ? "ESP32-S3"
+                            : (chip.model == CHIP_ESP32C3) ? "ESP32-C3"
+                                                           : "Unknown";
 
-    const esp_app_desc_t *app_desc = esp_ota_get_app_description();
+    const esp_app_desc_t *app_desc = esp_app_get_description();
 
     char info[384];
     snprintf(info, sizeof(info),
@@ -1126,18 +777,15 @@ static void ws_send_info(httpd_req_t *req)
              "\"app0_state\":\"valid\",\"app1_state\":\"empty\","
              "\"min_leds\":%d,\"max_leds\":%d,"
              "\"reset_reason\":\"%s\"}",
-             chip_name, chip.cores, (unsigned)flash_size,
-             app_desc->version, __DATE__, __TIME__, esp_get_idf_version(), ota_slot,
-             WT_SEGD_TOTAL_LEDS, WT_SEGD_MAX_TOTAL_LEDS,
+             chip_name, chip.cores, (unsigned)flash_size, app_desc->version, __DATE__, __TIME__,
+             esp_get_idf_version(), ota_slot, WT_SEGD_TOTAL_LEDS, WT_SEGD_MAX_TOTAL_LEDS,
              reset_reason);
     ws_reply(req, info);
 }
 
 /*!
-    \brief  Parses an inbound WS JSON command and dispatches it to the
-            matching handler (ping/settings/ntp_sync/reboot/wifi), replying
-            with an ack frame.
- */
+    \brief  Carry out a command received from a client and send the reply.
+*/
 static void ws_dispatch(httpd_req_t *req, const char *json_str)
 {
     cJSON *j = cJSON_Parse(json_str);
@@ -1165,12 +813,17 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
     if (strcmp(cmd, "settings") == 0)
     {
         wt_settings_t s = wt_settings_get();
-        settings_apply_json(&s, j);
+        // Keys that are not settings are ignored.
+        for (size_t i = 0; i < WT_SETTINGS_FIELD_COUNT; i++)
+        {
+            cJSON *val = cJSON_GetObjectItem(j, s_settings_fields[i].key);
+            if (val)
+                settings_field_apply(&s, &s_settings_fields[i], val);
+        }
         cJSON_Delete(j);
         bool ok = wt_settings_set(&s);
-        /* wt_settings_set() notifies the app_main display-request loop, which rebuilds and pushes
-           the display request from the new settings no need to do it here too. */
-        ws_reply(req, ok ? "{\"ack\":\"ok\"}" : "{\"ack\":\"err\",\"msg\":\"nvs write failed\"}");
+        // wt_settings_set() wakes the display-request loop, which applies them.
+        ws_reply(req, ok ? "{\"ack\":\"ok\"}" : "{\"ack\":\"err\",\"msg\":\"settings rejected\"}");
         return;
     }
 
@@ -1185,6 +838,7 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
         }
         cJSON_Delete(j);
         wt_log_info("NTP sync requested via WS");
+        wt_wifi_request_ntp_sync();
         ws_reply(req, "{\"ack\":\"ok\"}");
         return;
     }
@@ -1193,6 +847,7 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
     {
         cJSON_Delete(j);
         ws_reply(req, "{\"ack\":\"ok\",\"reboot\":true}");
+        wt_settings_flush(); // save pending changes before restarting
         vTaskDelay(pdMS_TO_TICKS(500));
         esp_restart();
         return;
@@ -1200,31 +855,49 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
 
     if (strcmp(cmd, "wifi") == 0)
     {
-        const char *op = cJSON_GetStringValue(cJSON_GetObjectItem(j, "op"));
+        const char *op      = cJSON_GetStringValue(cJSON_GetObjectItem(j, "op"));
         const char *err_msg = "invalid op";
-        bool ok = false;
+        bool ok             = false;
 
         if (op && strcmp(op, "add") == 0)
         {
-            const char *ssid = cJSON_GetStringValue(cJSON_GetObjectItem(j, "ssid"));
-            cJSON *passj = cJSON_GetObjectItem(j, "password");
+            const char *ssid   = cJSON_GetStringValue(cJSON_GetObjectItem(j, "ssid"));
+            cJSON *passj       = cJSON_GetObjectItem(j, "password");
             const char *passwd = passj ? cJSON_GetStringValue(passj) : "";
-            ok = ssid && wt_wifi_add_profile(ssid, passwd ? passwd : "");
-            err_msg = "full or invalid ssid";
+            ok                 = ssid && wt_wifi_add_profile(ssid, passwd ? passwd : "");
+            err_msg            = "full or invalid ssid";
         }
         else if (op && strcmp(op, "del") == 0)
         {
             cJSON *idxj = cJSON_GetObjectItem(j, "index");
-            int idx = idxj ? (int)cJSON_GetNumberValue(idxj) : -1;
-            ok = (idx >= 0) && wt_wifi_remove_profile(idx);
-            err_msg = "invalid index";
+            int idx     = idxj ? (int)cJSON_GetNumberValue(idxj) : -1;
+            ok          = (idx >= 0) && wt_wifi_remove_profile(idx);
+            err_msg     = "invalid index";
         }
         else if (op && strcmp(op, "connect") == 0)
         {
             cJSON *idxj = cJSON_GetObjectItem(j, "index");
-            int idx = idxj ? (int)cJSON_GetNumberValue(idxj) : -1;
-            ok = (idx >= 0) && wt_wifi_connect_profile(idx);
-            err_msg = "invalid index";
+            int idx     = idxj ? (int)cJSON_GetNumberValue(idxj) : -1;
+            ok          = (idx >= 0) && wt_wifi_connect_profile(idx);
+            err_msg     = "invalid index";
+        }
+        else if (op && strcmp(op, "hostname") == 0)
+        {
+            const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(j, "name"));
+            ok               = name && wt_wifi_set_hostname(name);
+            err_msg          = "name must be 1-31 characters: a-z, 0-9 and -";
+        }
+        else if (op && strcmp(op, "scan") == 0)
+        {
+            // The results are sent later in a "scan" frame.
+            ok      = wt_wifi_scan_start();
+            err_msg = "scan could not start, try again";
+        }
+        else if (op && strcmp(op, "ap_password") == 0)
+        {
+            const char *password = cJSON_GetStringValue(cJSON_GetObjectItem(j, "password"));
+            ok                   = password && wt_wifi_set_ap_password(password);
+            err_msg              = "password must be 8-63 characters";
         }
 
         cJSON_Delete(j);
@@ -1234,7 +907,7 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
         }
         else
         {
-            char resp[64];
+            char resp[96];
             snprintf(resp, sizeof(resp), "{\"ack\":\"err\",\"msg\":\"%s\"}", err_msg);
             ws_reply(req, resp);
         }
@@ -1246,28 +919,52 @@ static void ws_dispatch(httpd_req_t *req, const char *json_str)
 }
 
 /*!
-    \brief  ws_post_handshake_cb for /ws fires exactly once, right after the
-            WebSocket upgrade completes (CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT).
-
-            From IDF v6.0.1, the main .handler is no longer invoked for the
-            handshake itself (only for actual frames), so connection-time
-            setup registering the fd for broadcasts and sending the
-            one-time hello/info frames has to live here instead of behind
-            a req->method == HTTP_GET check in handler_ws().
- */
+    \brief  Called once when a WebSocket client has connected: registers it
+            for broadcasts and sends the hello and info frames.
+*/
 static esp_err_t ws_on_connect(httpd_req_t *req)
 {
-    ws_client_add(httpd_req_to_sockfd(req));
-    ws_send_hello(req);
+    int fd = httpd_req_to_sockfd(req);
+
+    if (!s_ws_mutex || xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(50)) != pdTRUE)
+        return ESP_OK;
+
+    bool already  = false;
+    int free_slot = -1;
+    for (int i = 0; i < WS_MAX_CLIENTS; i++)
+    {
+        if (s_ws_fds[i] == fd)
+        {
+            already = true;
+            break;
+        }
+        if (free_slot < 0 && s_ws_fds[i] < 0)
+            free_slot = i;
+    }
+    if (!already && free_slot >= 0)
+        s_ws_fds[free_slot] = fd;
+    xSemaphoreGive(s_ws_mutex);
+
+    if (!already)
+    {
+        s_ws_new_client = true;
+        wt_log_info("WS client connected fd=%d", fd);
+    }
+
+    // The console checks the protocol version to detect a firmware mismatch.
+    char hello[160];
+    snprintf(hello, sizeof(hello),
+             "{\"type\":\"hello\",\"proto\":%d,"
+             "\"features\":[\"display\",\"wifi\",\"power\",\"settings\",\"logs\"]}",
+             WT_WS_PROTO_VERSION);
+    ws_reply(req, hello);
     ws_send_info(req);
     return ESP_OK;
 }
 
 /*!
-    \brief  /ws frame handler: receives one WS frame, handles close
-            frames and connection housekeeping, and forwards text
-            payloads to ws_dispatch().
- */
+    \brief  Handles one frame received from a WebSocket client.
+*/
 static esp_err_t handler_ws(httpd_req_t *req)
 {
     int fd = httpd_req_to_sockfd(req);
@@ -1321,91 +1018,54 @@ static esp_err_t handler_ws(httpd_req_t *req)
 }
 
 /*!
-    \brief  Build the periodic "full" WS frame.
+    \brief  Print a JSON object into buf ("null" if it cannot) and free it.
+*/
+static void json_print_to(cJSON *obj, char *buf, size_t buf_len)
+{
+    char *text = cJSON_PrintUnformatted(obj);
+    strlcpy(buf, text ? text : "null", buf_len);
+    free(text);
+    cJSON_Delete(obj);
+}
 
-    \param[in]  force  When true, rebuild and include the wifi/settings/power
-                    sub-objects even if their generation counters haven't
-                    changed (used to give a freshly connected client an
-                    initial snapshot). Otherwise those sub-objects are only
-                    rebuilt when their underlying state actually changed
-                    since the last call see wt_settings_get_generation()/
-                    wt_wifi_get_generation() and are sent as JSON null
-                    otherwise, so an idle device isn't rebuilding/re-sending
-                    the same bytes on every tick.
- */
+/*!
+    \brief  Build the full frame.
+    \param[in]  force  Include the WiFi, power and settings objects even if they have not changed.
+*/
 static void build_ws_payload(char *buf, size_t buf_len, uint32_t *inout_log_seq, bool force)
 {
-    uint32_t free_heap = esp_get_free_heap_size();
-    uint32_t min_heap = esp_get_minimum_free_heap_size();
-    uint32_t total_heap = min_heap + free_heap;
-    int64_t uptime_s = esp_timer_get_time() / 1000000;
-
-    size_t spiffs_total = 0, spiffs_used = 0;
-    esp_spiffs_info("spiffs", &spiffs_total, &spiffs_used);
-    int spiffs_pct = spiffs_total ? (int)(spiffs_used * 100 / spiffs_total) : 0;
+    uint32_t free_heap  = esp_get_free_heap_size();
+    uint32_t min_heap   = esp_get_minimum_free_heap_size();
+    uint32_t total_heap = (uint32_t)heap_caps_get_total_size(MALLOC_CAP_DEFAULT);
+    int64_t uptime_s    = esp_timer_get_time() / 1000000;
 
     wt_wifi_status_t wst = wt_wifi_get_status();
-    float temperature_c = NAN;
-    bool has_temp = read_mcu_temperature_c(&temperature_c);
+    float temperature_c  = NAN;
+    bool has_temp        = read_mcu_temperature_c(&temperature_c);
 
-    /* ---- Display ---- */
-    static char disp_json[2048];
-    strlcpy(disp_json, "null", sizeof(disp_json));
+    // Display
+    static char disp_json[WS_DISPLAY_PAYLOAD];
     wt_segd_snapshot_t snap;
-    if (wt_segd_snapshot_get(&snap))
-    {
-        int brightness = (snap.request.intensity * 100) / 255;
-        cJSON *d = cJSON_CreateObject();
-        cJSON_AddBoolToObject(d, "available", true);
-        cJSON_AddStringToObject(d, "mode", mode_to_string(snap.request.mode));
-        cJSON_AddStringToObject(d, "anim", anim_to_string(snap.request.anim));
-        cJSON_AddNumberToObject(d, "brightness", brightness);
-        cJSON_AddBoolToObject(d, "colon", snap.colon_on);
-        cJSON_AddBoolToObject(d, "colon_blink", snap.request.colon_blink);
-        cJSON_AddNumberToObject(d, "time_format", snap.request.time_format);
-        cJSON *digits = cJSON_AddArrayToObject(d, "digits");
-        for (int i = 0; i < WT_SEGD_NUM_DIGITS; i++)
-            cJSON_AddItemToArray(digits, cJSON_CreateNumber(snap.frame.digit[i]));
-        cJSON_AddItemToObject(d, "color_on", color_to_json(snap.request.color_on));
-        cJSON_AddItemToObject(d, "color_off", color_to_json(snap.request.color_off));
-        cJSON_AddItemToObject(d, "colon_color", color_to_json(snap.colon_color));
-        if (!digit_colors_all_match_color_on(&snap))
-        {
-            cJSON *dc = cJSON_AddArrayToObject(d, "digit_colors");
-            for (int di = 0; di < WT_SEGD_NUM_DIGITS; di++)
-            {
-                cJSON *sc = cJSON_CreateArray();
-                for (int si = 0; si < WT_SEGD_SEGS_PER_DIGIT; si++)
-                    cJSON_AddItemToArray(sc, color_to_json(snap.digit_color[di][si]));
-                cJSON_AddItemToArray(dc, sc);
-            }
-        }
-        char *ds = cJSON_PrintUnformatted(d);
-        if (ds)
-        {
-            strlcpy(disp_json, ds, sizeof(disp_json));
-            free(ds);
-        }
-        cJSON_Delete(d);
-    }
+    format_display_json(disp_json, sizeof(disp_json), wt_segd_snapshot_get(&snap) ? &snap : NULL,
+                        false);
 
-    /* ---- Logs (incremental) ---- */
-    static char log_json[2048];
+    // New log lines
+    static char log_json[4096];
     uint32_t next_seq = 0;
     wt_log_read_json(*inout_log_seq, log_json, sizeof(log_json), &next_seq);
     *inout_log_seq = next_seq;
 
-    /* ---- WiFi (tier 2 only rebuilt when wt_wifi_get_generation() changes) ---- */
+    // WiFi: rebuilt only when it changed
     static uint32_t s_last_wifi_gen = 0;
     static char wifi_json[1024];
     uint32_t wifi_gen = wt_wifi_get_generation();
-    bool wifi_dirty = force || (wifi_gen != s_last_wifi_gen);
-    s_last_wifi_gen = wifi_gen;
+    bool wifi_dirty   = force || (wifi_gen != s_last_wifi_gen);
+    s_last_wifi_gen   = wifi_gen;
 
     if (wifi_dirty)
     {
         wt_wifi_profile_t prof[WT_WIFI_MAX_PROFILES];
-        int cnt = wt_wifi_get_profiles(prof, WT_WIFI_MAX_PROFILES);
+        int cnt  = wt_wifi_get_profiles(prof, WT_WIFI_MAX_PROFILES);
         cJSON *w = cJSON_CreateObject();
         cJSON_AddBoolToObject(w, "connected", wst.sta_connected);
         cJSON_AddStringToObject(w, "ssid", wst.sta_ssid);
@@ -1416,6 +1076,7 @@ static void build_ws_payload(char *buf, size_t buf_len, uint32_t *inout_log_seq,
         cJSON_AddBoolToObject(w, "ap_active", wst.ap_active);
         cJSON_AddStringToObject(w, "ap_ssid", wst.ap_ssid);
         cJSON_AddNumberToObject(w, "ap_clients", wst.ap_clients);
+        cJSON_AddStringToObject(w, "hostname", wst.hostname);
         cJSON *profiles = cJSON_AddArrayToObject(w, "profiles");
         for (int i = 0; i < cnt; i++)
         {
@@ -1425,62 +1086,48 @@ static void build_ws_payload(char *buf, size_t buf_len, uint32_t *inout_log_seq,
             cJSON_AddBoolToObject(p, "has_pass", strlen(prof[i].passwd) > 0);
             cJSON_AddItemToArray(profiles, p);
         }
-        char *ws = cJSON_PrintUnformatted(w);
-        if (ws)
-        {
-            strlcpy(wifi_json, ws, sizeof(wifi_json));
-            free(ws);
-        }
-        else
-        {
-            strlcpy(wifi_json, "null", sizeof(wifi_json));
-        }
-        cJSON_Delete(w);
+        json_print_to(w, wifi_json, sizeof(wifi_json));
     }
     else
     {
         strlcpy(wifi_json, "null", sizeof(wifi_json));
     }
 
-    /* ---- Power + Settings (tier 2 only rebuilt when wt_settings_get_generation()
-       changes; both are derived entirely from wt_settings_t) ---- */
+    // Power and settings: rebuilt only when the settings changed
     static uint32_t s_last_settings_gen = 0;
     static char power_json[256];
     static char settings_json[1280];
     uint32_t settings_gen = wt_settings_get_generation();
-    bool settings_dirty = force || (settings_gen != s_last_settings_gen);
-    s_last_settings_gen = settings_gen;
+    bool settings_dirty   = force || (settings_gen != s_last_settings_gen);
+    s_last_settings_gen   = settings_gen;
 
     if (settings_dirty)
     {
         wt_settings_t ss = wt_settings_get();
 
-        cJSON *s_obj = settings_to_json_object(&ss);
-        char *ss_str = cJSON_PrintUnformatted(s_obj);
-        strlcpy(settings_json, ss_str ? ss_str : "null", sizeof(settings_json));
-        if (ss_str)
-            free(ss_str);
-        cJSON_Delete(s_obj);
+        cJSON *s_obj = cJSON_CreateObject();
+        for (size_t i = 0; i < WT_SETTINGS_FIELD_COUNT; i++)
+            settings_field_to_json(s_obj, &ss, &s_settings_fields[i]);
+        json_print_to(s_obj, settings_json, sizeof(settings_json));
 
-        static const char *const s_power_settings_keys[] = {
-            "sleep_mode", "sleep_timeout", "batt_alert_pct", "ps_dim", "ps_wifi"};
-        cJSON *p_obj = cJSON_CreateObject();
+        static const char *const s_power_settings_keys[] = {"sleep_mode", "sleep_timeout",
+                                                            "batt_alert_pct", "ps_dim", "ps_wifi"};
+        cJSON *p_obj                                     = cJSON_CreateObject();
         cJSON_AddNumberToObject(p_obj, "battery_pct", 0);
         cJSON_AddNumberToObject(p_obj, "voltage", 0.0);
         cJSON_AddNumberToObject(p_obj, "current", 0);
         cJSON_AddStringToObject(p_obj, "source", "USB");
         cJSON_AddNumberToObject(p_obj, "eta_hours", 0);
-        for (size_t i = 0; i < sizeof(s_power_settings_keys) / sizeof(s_power_settings_keys[0]); i++)
+        for (size_t i = 0; i < sizeof(s_power_settings_keys) / sizeof(s_power_settings_keys[0]);
+             i++)
         {
-            const wt_settings_field_t *f = find_settings_field(s_power_settings_keys[i]);
-            if (f)
-                settings_field_to_json(p_obj, &ss, f);
+            for (size_t k = 0; k < WT_SETTINGS_FIELD_COUNT; k++)
+            {
+                if (strcmp(s_settings_fields[k].key, s_power_settings_keys[i]) == 0)
+                    settings_field_to_json(p_obj, &ss, &s_settings_fields[k]);
+            }
         }
-        char *ps_str = cJSON_PrintUnformatted(p_obj);
-        strlcpy(power_json, ps_str ? ps_str : "null", sizeof(power_json));
-        if (ps_str)
-            free(ps_str);
-        cJSON_Delete(p_obj);
+        json_print_to(p_obj, power_json, sizeof(power_json));
     }
     else
     {
@@ -1488,27 +1135,27 @@ static void build_ws_payload(char *buf, size_t buf_len, uint32_t *inout_log_seq,
         strlcpy(settings_json, "null", sizeof(settings_json));
     }
 
+    // An SSID may contain quotes and backslashes.
+    char sta_ssid_json[(2 * WT_WIFI_SSID_LEN) + 1];
+    json_escape_string(sta_ssid_json, sizeof(sta_ssid_json), wst.sta_ssid);
+
     snprintf(buf, buf_len,
              "{\"type\":\"full\","
              "\"cpu_usage\":0,\"flash_used_pct\":0,"
-             "\"free_heap\":%lu,\"total_heap\":%lu,\"min_free_heap\":%lu,"
-             "\"spiffs_used_pct\":%d,\"uptime_s\":%lld,"
+             "\"free_heap\":%" PRIu32 ",\"total_heap\":%" PRIu32 ",\"min_free_heap\":%" PRIu32 ","
+             "\"uptime_s\":%lld,"
              "\"temperature\":%.1f,"
              "\"sta_connected\":%s,\"sta_ssid\":\"%s\","
              "\"sta_ip\":\"%s\",\"rssi\":%d,\"ap_ip\":\"%s\","
              "\"display\":%s,\"wifi\":%s,\"power\":%s,\"settings\":%s,\"logs\":%s}",
-             free_heap, total_heap, min_heap,
-             spiffs_pct, (long long)uptime_s,
-             has_temp ? temperature_c : 0.0f,
-             wst.sta_connected ? "true" : "false", wst.sta_ssid,
-             wst.sta_ip, wst.sta_rssi, wst.ap_ip,
-             disp_json, wifi_json, power_json, settings_json, log_json);
+             free_heap, total_heap, min_heap, (long long)uptime_s, has_temp ? temperature_c : 0.0f,
+             wst.sta_connected ? "true" : "false", sta_ssid_json, wst.sta_ip, wst.sta_rssi,
+             wst.ap_ip, disp_json, wifi_json, power_json, settings_json, log_json);
 }
 
 /*!
-    \brief  Appends a printf-formatted fragment to a JSON buffer at a
-            running offset, tracking overflow.
- */
+    \brief  Append formatted text to a buffer; false if it does not fit.
+*/
 static bool append_jsonf(char *buf, size_t buf_len, size_t *offset, const char *fmt, ...)
 {
     if (!buf || !offset || *offset >= buf_len)
@@ -1535,10 +1182,10 @@ static bool append_jsonf(char *buf, size_t buf_len, size_t *offset, const char *
 }
 
 /*!
-    \brief  Serializes a display snapshot into the "disp"/"display" JSON
-            fragment shared by the WS display-only and full frames.
- */
-static void format_display_json(char *buf, size_t buf_len, const wt_segd_snapshot_t *snap, bool with_type)
+    \brief  Write the display state as JSON, for the display and full frames.
+*/
+static void format_display_json(char *buf, size_t buf_len, const wt_segd_snapshot_t *snap,
+                                bool with_type)
 {
     if (!buf || buf_len == 0)
     {
@@ -1547,53 +1194,58 @@ static void format_display_json(char *buf, size_t buf_len, const wt_segd_snapsho
 
     if (!snap)
     {
-        snprintf(buf, buf_len,
-                 with_type ? "{\"type\":\"disp\",\"display\":null}" : "null");
+        snprintf(buf, buf_len, with_type ? "{\"type\":\"disp\",\"display\":null}" : "null");
         return;
     }
 
     int brightness = (snap->request.intensity * 100) / 255;
-    size_t offset = 0;
+    size_t offset  = 0;
 
-    if (!append_jsonf(buf, buf_len, &offset,
-                      with_type ? "{\"type\":\"disp\",\"display\":{" : "{"))
+    if (!append_jsonf(buf, buf_len, &offset, with_type ? "{\"type\":\"disp\",\"display\":{" : "{"))
     {
         goto overflow;
     }
 
-    if (!append_jsonf(buf, buf_len, &offset,
-                      "\"available\":true,"
-                      "\"mode\":\"%s\","
-                      "\"anim\":\"%s\","
-                      "\"brightness\":%d,"
-                      "\"colon\":%s,"
-                      "\"colon_blink\":%s,"
-                      "\"time_format\":%u,"
-                      "\"digits\":[%u,%u,%u,%u],"
-                      "\"color_on\":[%u,%u,%u],"
-                      "\"color_off\":[%u,%u,%u],"
-                      "\"colon_color\":[%u,%u,%u]",
-                      mode_to_string(snap->request.mode),
-                      anim_to_string(snap->request.anim),
-                      brightness,
-                      snap->colon_on ? "true" : "false",
-                      snap->request.colon_blink ? "true" : "false",
-                      snap->request.time_format,
-                      snap->frame.digit[0], snap->frame.digit[1],
-                      snap->frame.digit[2], snap->frame.digit[3],
-                      snap->request.color_on.red, snap->request.color_on.green, snap->request.color_on.blue,
-                      snap->request.color_off.red, snap->request.color_off.green, snap->request.color_off.blue,
-                      snap->colon_color.red, snap->colon_color.green, snap->colon_color.blue))
+    if (!append_jsonf(
+            buf, buf_len, &offset,
+            "\"available\":true,"
+            "\"mode\":\"%s\","
+            "\"brightness\":%d,"
+            "\"colon\":%s,"
+            "\"colon_blink\":%s,"
+            "\"time_format\":%u,"
+            "\"digits\":[%u,%u,%u,%u],"
+            "\"color_on\":[%u,%u,%u],"
+            "\"color_off\":[%u,%u,%u],"
+            "\"colon_color\":[%u,%u,%u]",
+            mode_to_string(snap->request.mode), brightness, snap->colon_on ? "true" : "false",
+            snap->request.colon_blink ? "true" : "false", snap->request.time_format,
+            snap->frame.digit[0], snap->frame.digit[1], snap->frame.digit[2], snap->frame.digit[3],
+            snap->request.color_on.red, snap->request.color_on.green, snap->request.color_on.blue,
+            snap->request.color_off.red, snap->request.color_off.green,
+            snap->request.color_off.blue, snap->colon_color.red, snap->colon_color.green,
+            snap->colon_color.blue))
     {
         goto overflow;
     }
 
-    /* Per-segment colors are only sent when they diverge from color_on  
-       the common "single color for the whole display" case just omits the
-       key, and the client already falls back to color_on/brightness. This
-       is the highest-frequency frame in the protocol (~20 fps), so skipping
-       the ~84-number array here matters far more than in the "full" frame. */
-    if (!digit_colors_all_match_color_on(snap))
+    // Per-segment colors are sent only when they differ from color_on. This
+    // frame is sent often, so leaving out the array matters.
+    bool all_color_on = true;
+    for (int di = 0; di < WT_SEGD_NUM_DIGITS && all_color_on; di++)
+    {
+        for (int si = 0; si < WT_SEGD_SEGS_PER_DIGIT; si++)
+        {
+            wt_segd_color_t c = snap->digit_color[di][si];
+            if (c.red != snap->request.color_on.red || c.green != snap->request.color_on.green ||
+                c.blue != snap->request.color_on.blue)
+            {
+                all_color_on = false;
+                break;
+            }
+        }
+    }
+    if (!all_color_on)
     {
         if (!append_jsonf(buf, buf_len, &offset, ",\"digit_colors\":["))
         {
@@ -1610,8 +1262,7 @@ static void format_display_json(char *buf, size_t buf_len, const wt_segd_snapsho
             for (int si = 0; si < WT_SEGD_SEGS_PER_DIGIT; ++si)
             {
                 wt_segd_color_t color = snap->digit_color[di][si];
-                if (!append_jsonf(buf, buf_len, &offset,
-                                  si == 0 ? "[%u,%u,%u]" : ",[%u,%u,%u]",
+                if (!append_jsonf(buf, buf_len, &offset, si == 0 ? "[%u,%u,%u]" : ",[%u,%u,%u]",
                                   color.red, color.green, color.blue))
                 {
                     goto overflow;
@@ -1641,84 +1292,145 @@ overflow:
 }
 
 /*!
-    \brief  Builds the periodic display-only WS frame ("disp" type) from
-            the current segment-display snapshot.
+    \brief  Build the scan frame: whether a scan is running and the networks
+            found.
  */
-static void build_display_frame(char *buf, size_t buf_len)
+static void build_scan_frame(char *buf, size_t buf_len)
 {
-    wt_segd_snapshot_t snap;
-    if (!wt_segd_snapshot_get(&snap))
+    wt_wifi_scan_result_t results[WT_WIFI_SCAN_MAX_RESULTS];
+    bool scanning = false;
+    int count     = wt_wifi_get_scan_results(results, WT_WIFI_SCAN_MAX_RESULTS, &scanning);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "scan");
+    cJSON_AddBoolToObject(root, "scanning", scanning);
+    cJSON *networks = cJSON_AddArrayToObject(root, "networks");
+    for (int i = 0; i < count; i++)
     {
-        snprintf(buf, buf_len, "{\"type\":\"disp\",\"display\":null}");
-        return;
+        cJSON *n = cJSON_CreateObject();
+        cJSON_AddStringToObject(n, "ssid", results[i].ssid);
+        cJSON_AddNumberToObject(n, "rssi", results[i].rssi);
+        cJSON_AddNumberToObject(n, "channel", results[i].channel);
+        cJSON_AddBoolToObject(n, "secure", results[i].secure);
+        cJSON_AddItemToArray(networks, n);
     }
-    format_display_json(buf, buf_len, &snap, true);
+
+    // If the frame does not fit, send an empty one instead of a cut-off one.
+    if (!root || !cJSON_PrintPreallocated(root, buf, (int)buf_len, false))
+    {
+        snprintf(buf, buf_len, "{\"type\":\"scan\",\"scanning\":false,\"networks\":[]}");
+    }
+    cJSON_Delete(root);
+}
+
+/// A frame waiting to be sent to every client by the server task.
+typedef struct
+{
+    size_t len;
+    char text[];
+} ws_broadcast_t;
+
+static int s_ws_queued = 0; ///< Broadcasts queued and not yet sent (atomic)
+
+/*!
+    \brief  Runs on the HTTP server task: send a queued frame to every
+            connected client, closing any connection that fails.
+*/
+static void ws_broadcast_work(void *arg)
+{
+    ws_broadcast_t *frame = (ws_broadcast_t *)arg;
+    httpd_ws_frame_t pkt  = {
+         .final      = true,
+         .fragmented = false,
+         .type       = HTTPD_WS_TYPE_TEXT,
+         .payload    = (uint8_t *)frame->text,
+         .len        = frame->len,
+    };
+    if (s_ws_mutex && xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(50)) == pdTRUE)
+    {
+        for (int i = 0; i < WS_MAX_CLIENTS; i++)
+        {
+            if (s_ws_fds[i] < 0)
+                continue;
+            // The socket of a client that left may now belong to an ordinary
+            // HTTP request, which must not receive a WebSocket frame.
+            if (httpd_ws_get_fd_info(s_http_server, s_ws_fds[i]) != HTTPD_WS_CLIENT_WEBSOCKET)
+            {
+                s_ws_fds[i] = -1;
+                continue;
+            }
+            esp_err_t err = httpd_ws_send_frame_async(s_http_server, s_ws_fds[i], &pkt);
+            if (err != ESP_OK)
+            {
+                // Close the session so the browser notices and reconnects.
+                wt_log_warn("WS send failed fd=%d (%s) closing", s_ws_fds[i], esp_err_to_name(err));
+                httpd_sess_trigger_close(s_http_server, s_ws_fds[i]);
+                s_ws_fds[i] = -1;
+            }
+        }
+        xSemaphoreGive(s_ws_mutex);
+    }
+    free(frame);
+    __atomic_fetch_sub(&s_ws_queued, 1, __ATOMIC_RELAXED);
 }
 
 /*!
-    \brief  Broadcasts a WS text payload to every connected client,
-            closing any connection whose send fails.
- */
-static void ws_broadcast_frame(const char *payload)
+    \brief  Queue a frame for every connected client. It is sent by the HTTP
+            server task, the same task that answers commands, so frames and
+            replies are never written to a socket at the same time.
+    \param[in]  max_queued  Skip the frame if this many are already waiting,
+                            e.g. while an upload keeps the server task busy.
+    \return true if the frame was queued.
+*/
+static bool ws_broadcast_frame(const char *payload, int max_queued)
 {
-    httpd_ws_frame_t pkt = {
-        .final = true,
-        .fragmented = false,
-        .type = HTTPD_WS_TYPE_TEXT,
-        .payload = (uint8_t *)payload,
-        .len = strlen(payload),
-    };
-    if (!s_ws_mutex || xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(50)) != pdTRUE)
-        return;
-    for (int i = 0; i < WS_MAX_CLIENTS; i++)
+    if (!s_http_server || __atomic_load_n(&s_ws_queued, __ATOMIC_RELAXED) >= max_queued)
+        return false;
+
+    size_t len            = strlen(payload);
+    ws_broadcast_t *frame = malloc(sizeof(*frame) + len + 1);
+    if (!frame)
+        return false;
+    frame->len = len;
+    memcpy(frame->text, payload, len + 1);
+
+    __atomic_fetch_add(&s_ws_queued, 1, __ATOMIC_RELAXED);
+    if (httpd_queue_work(s_http_server, ws_broadcast_work, frame) != ESP_OK)
     {
-        if (s_ws_fds[i] < 0)
-            continue;
-        esp_err_t err = httpd_ws_send_frame_async(s_http_server, s_ws_fds[i], &pkt);
-        if (err != ESP_OK)
-        {
-            /* A failed async send can leave the TCP socket half-open without ever
-               notifying the browser, so its WebSocket.onclose never fires and the
-               client-side auto-reconnect never triggers. Explicitly ask the server
-               to tear the session down so the client actually sees a close and
-               reconnects instead of sitting on stale data indefinitely. */
-            wt_log_warn("WS send failed fd=%d (%s) closing", s_ws_fds[i], esp_err_to_name(err));
-            httpd_sess_trigger_close(s_http_server, s_ws_fds[i]);
-            s_ws_fds[i] = -1;
-        }
+        __atomic_fetch_sub(&s_ws_queued, 1, __ATOMIC_RELAXED);
+        free(frame);
+        return false;
     }
-    xSemaphoreGive(s_ws_mutex);
+    return true;
 }
 
-#define CAPTIVE_AP_IP "192.168.4.1"
-#define CAPTIVE_DNS_PORT 53
+#define CAPTIVE_AP_IP        "192.168.4.1"
+#define CAPTIVE_DNS_PORT     53
 #define CAPTIVE_DNS_BUF_SIZE 512
 
 /*!
-    \brief  Answers a captive-portal DNS query in place, rewriting it into
-            an authoritative response that points every A/ANY query at the
-            AP's own IP address. Called from wt_task_web after recvfrom()
-            returns >=12 bytes.
- */
-static void dns_handle_query(uint8_t *buf, int len, int sock,
-                             struct sockaddr_in *client, socklen_t clen)
+    \brief  Answer a DNS query with the access point's address, so connecting
+            devices open the captive portal.
+*/
+static void dns_handle_query(uint8_t *buf, int len, int sock, struct sockaddr_in *client,
+                             socklen_t clen)
 {
     if (len < 12)
         return;
 
-    /* Only handle standard queries (QR=0, Opcode=0) */
+    // Only standard queries are answered.
     if ((buf[2] & 0xFA) != 0x00)
         return;
 
-    /* Patch DNS header in-place */
-    uint8_t rd = buf[2] & 0x01; /* preserve Recursion Desired bit */
-    buf[2] = 0x84 | rd;         /* QR=1 (response), AA=1 (authoritative) */
-    buf[3] = 0x80;              /* RA=1, RCODE=0 (no error)              */
-    buf[6] = buf[4];            /* ANCOUNT = QDCOUNT                     */
-    buf[7] = buf[5];
-    buf[8] = buf[9] = buf[10] = buf[11] = 0; /* NSCOUNT / ARCOUNT = 0      */
+    // Turn the query into a response in place.
+    uint8_t rd = buf[2] & 0x01; // keep the Recursion Desired bit
+    buf[2]     = 0x84 | rd;     // response, authoritative
+    buf[3]     = 0x80;          // recursion available, no error
+    buf[6]     = 0;             // answer count, set below
+    buf[7]     = 0;
+    buf[8] = buf[9] = buf[10] = buf[11] = 0; // no authority or additional records
 
-    /* Walk the question section to find its end */
+    // Skip the question name.
     int pos = 12;
     while (pos < len && buf[pos] != 0x00)
     {
@@ -1730,7 +1442,7 @@ static void dns_handle_query(uint8_t *buf, int len, int sock,
         pos += buf[pos] + 1;
     }
     if (pos < len && buf[pos] == 0x00)
-        pos++; /* consume null label */
+        pos++; // end of name
 past_name:
 
     if (pos + 4 > len)
@@ -1740,93 +1452,64 @@ past_name:
     }
 
     uint16_t qtype = ((uint16_t)buf[pos] << 8) | buf[pos + 1];
-    pos += 4; /* skip QTYPE + QCLASS */
+    pos += 4; // skip question type and class
 
-    /* Append A-record answer for type A (1) or ANY (255) */
+    // Answer address queries with the access point's own address.
     if ((qtype == 1 || qtype == 255) && pos + 16 <= CAPTIVE_DNS_BUF_SIZE)
     {
         buf[pos++] = 0xC0;
-        buf[pos++] = 0x0C; /* name ptr → question  */
+        buf[pos++] = 0x0C; // pointer to the question name
         buf[pos++] = 0x00;
-        buf[pos++] = 0x01; /* type A               */
+        buf[pos++] = 0x01; // type A
         buf[pos++] = 0x00;
-        buf[pos++] = 0x01; /* class IN             */
+        buf[pos++] = 0x01; // class IN
         buf[pos++] = 0x00;
         buf[pos++] = 0x00;
         buf[pos++] = 0x00;
-        buf[pos++] = 0x0A; /* TTL 10 s             */
+        buf[pos++] = 0x0A; // TTL 10 s
         buf[pos++] = 0x00;
-        buf[pos++] = 0x04; /* RDLENGTH 4           */
+        buf[pos++] = 0x04; // 4 address bytes
         buf[pos++] = 192;
         buf[pos++] = 168;
         buf[pos++] = 4;
-        buf[pos++] = 1; /* 192.168.4.1          */
+        buf[pos++] = 1; // 192.168.4.1
+        buf[7]     = 1; // one answer
     }
 
     sendto(sock, buf, pos, 0, (struct sockaddr *)client, clen);
 }
 
 /*!
-    \brief  Answers the iOS/macOS captive-portal probe (GET
-            /hotspot-detect.html, /library/test/success.html) with a 302
-            redirect must not return 200+"Success" (that would mean
-            "has internet") so the OS shows the Captive Network Assistant.
- */
-static esp_err_t handler_captive_apple(httpd_req_t *req)
+    \brief  Captive-portal check from Apple, Android or another OS: redirect
+            to the console so the sign-in window opens.
+*/
+static esp_err_t handler_captive_redirect(httpd_req_t *req)
 {
     httpd_resp_set_status(req, "302 Found");
     httpd_resp_set_hdr(req, "Location", "http://" CAPTIVE_AP_IP "/");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
     httpd_resp_set_type(req, "text/html");
-    httpd_resp_sendstr(req,
-                       "<html><body>"
-                       "<a href=\"http://" CAPTIVE_AP_IP "/\">Sign in to network</a>"
-                       "</body></html>");
+    httpd_resp_sendstr(req, "<html><body>"
+                            "<a href=\"http://" CAPTIVE_AP_IP "/\">Sign in to network</a>"
+                            "</body></html>");
     return ESP_OK;
 }
 
 /*!
-    \brief  Answers the Android/Chrome captive-portal probe (GET
-            /generate_204, /gen_204) with a non-204 redirect so the OS
-            raises its portal notification.
- */
-static esp_err_t handler_captive_android(httpd_req_t *req)
-{
-    httpd_resp_set_status(req, "302 Found");
-    httpd_resp_set_hdr(req, "Location", "http://" CAPTIVE_AP_IP "/");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    httpd_resp_sendstr(req, "");
-    return ESP_OK;
-}
-
-/*!
-    \brief  Answers the Windows NCSI captive-portal probe (GET /ncsi.txt)
-            with the exact expected "Microsoft NCSI" body.
- */
-static esp_err_t handler_captive_win_ncsi(httpd_req_t *req)
+    \brief  Windows connectivity check: answer with the text it expects
+            (user_ctx).
+*/
+static esp_err_t handler_captive_text(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    httpd_resp_sendstr(req, "Microsoft NCSI");
+    httpd_resp_sendstr(req, (const char *)req->user_ctx);
     return ESP_OK;
 }
 
 /*!
-    \brief  Answers the Windows connectivity-test probe (GET
-            /connecttest.txt).
- */
-static esp_err_t handler_captive_win_connect(httpd_req_t *req)
-{
-    httpd_resp_set_type(req, "text/plain");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    httpd_resp_sendstr(req, "Microsoft Connect Test");
-    return ESP_OK;
-}
-
-/*!
-    \brief  Answers the Firefox captive-portal probe (GET /canonical.html)
-            with an HTML meta-refresh redirect.
- */
+    \brief  Firefox captive-portal check: redirect to the console.
+*/
 static esp_err_t handler_captive_firefox(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
@@ -1839,34 +1522,25 @@ static esp_err_t handler_captive_firefox(httpd_req_t *req)
 }
 
 /*!
-    \brief  Generic captive-portal redirect handler for GET /redirect and
-            /success.txt.
- */
-static esp_err_t handler_captive_redirect(httpd_req_t *req)
-{
-    httpd_resp_set_status(req, "302 Found");
-    httpd_resp_set_hdr(req, "Location", "http://" CAPTIVE_AP_IP "/");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_sendstr(req,
-                       "<html><body>"
-                       "<a href=\"http://" CAPTIVE_AP_IP "/\">Open portal</a>"
-                       "</body></html>");
-    return ESP_OK;
-}
-
-/*!
-    \brief  Starts the HTTP server and registers all static-asset, OTA,
-            captive-portal probe, and WebSocket URI handlers.
- */
+    \brief  Start the HTTP server and register every URL handler.
+*/
 static void start_server(void)
 {
-    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.uri_match_fn = httpd_uri_match_wildcard;
-    cfg.max_uri_handlers = 14; /* 3 assets + 1 OTA + 9 captive probes + 1 WS */
-    cfg.stack_size = 16384;
+    httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
+    cfg.uri_match_fn     = httpd_uri_match_wildcard;
+    cfg.max_uri_handlers = 14; // 3 assets, 1 OTA, 9 captive-portal probes, 1 WebSocket
+    // Enough sockets for several devices at once, each with a WebSocket and
+    // a connection or two for page loads. LWIP_MAX_SOCKETS must leave room
+    // for the server's own 3 sockets and the DNS responder.
+    cfg.max_open_sockets = 12;
+    // When all sockets are in use, close the least recently used one instead
+    // of refusing new connections.
+    cfg.lru_purge_enable  = true;
+    cfg.stack_size        = 16384;
     cfg.recv_wait_timeout = 10;
-    cfg.send_wait_timeout = 10;
+    // A client that vanished without closing is dropped after 3 s instead of
+    // holding up the broadcast to everyone else for longer.
+    cfg.send_wait_timeout = 3;
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &cfg) != ESP_OK)
@@ -1877,45 +1551,44 @@ static void start_server(void)
 
     s_http_server = server;
 
-#define REG(m, u, h)                                                        \
-    do                                                                      \
-    {                                                                       \
-        httpd_uri_t _u = {.uri = (u), .method = (m), .handler = (h)};       \
-        esp_err_t _e = httpd_register_uri_handler(server, &_u);             \
-        if (_e != ESP_OK)                                                  \
-            wt_log_error("Failed to register URI %s: %s", (u), esp_err_to_name(_e)); \
+#define REG(m, u, h, ctx)                                                                          \
+    do                                                                                             \
+    {                                                                                              \
+        httpd_uri_t _u = {.uri = (u), .method = (m), .handler = (h), .user_ctx = (void *)(ctx)};   \
+        esp_err_t _e   = httpd_register_uri_handler(server, &_u);                                  \
+        if (_e != ESP_OK)                                                                          \
+            wt_log_error("Failed to register URI %s: %s", (u), esp_err_to_name(_e));               \
     } while (0)
 
-    /* ── Static assets needed for initial page load only ── */
-    REG(HTTP_GET, "/", handler_root);
-    REG(HTTP_GET, "/style.css", handler_style_css);
-    REG(HTTP_GET, "/app.js", handler_app_js);
+    // Web console files
+    for (size_t i = 0; i < sizeof(s_web_files) / sizeof(s_web_files[0]); i++)
+        REG(HTTP_GET, s_web_files[i].uri, handler_web_file, &s_web_files[i]);
 
-    /* ── OTA uploads binary multipart, cannot go over WebSocket ── */
-    REG(HTTP_POST, "/api/ota", handler_ota);
+    // Firmware and web console uploads
+    REG(HTTP_POST, "/api/ota", handler_ota, NULL);
 
-    /* ── Captive-portal OS probe handlers ── */
-    REG(HTTP_GET, "/hotspot-detect.html", handler_captive_apple);
-    REG(HTTP_GET, "/library/test/success.html", handler_captive_apple);
-    REG(HTTP_GET, "/generate_204", handler_captive_android);
-    REG(HTTP_GET, "/gen_204", handler_captive_android);
-    REG(HTTP_GET, "/ncsi.txt", handler_captive_win_ncsi);
-    REG(HTTP_GET, "/connecttest.txt", handler_captive_win_connect);
-    REG(HTTP_GET, "/redirect", handler_captive_redirect);
-    REG(HTTP_GET, "/canonical.html", handler_captive_firefox);
-    REG(HTTP_GET, "/success.txt", handler_captive_redirect);
+    // Captive-portal probes from phones and computers
+    REG(HTTP_GET, "/hotspot-detect.html", handler_captive_redirect, NULL);
+    REG(HTTP_GET, "/library/test/success.html", handler_captive_redirect, NULL);
+    REG(HTTP_GET, "/generate_204", handler_captive_redirect, NULL);
+    REG(HTTP_GET, "/gen_204", handler_captive_redirect, NULL);
+    REG(HTTP_GET, "/redirect", handler_captive_redirect, NULL);
+    REG(HTTP_GET, "/success.txt", handler_captive_redirect, NULL);
+    REG(HTTP_GET, "/ncsi.txt", handler_captive_text, "Microsoft NCSI");
+    REG(HTTP_GET, "/connecttest.txt", handler_captive_text, "Microsoft Connect Test");
+    REG(HTTP_GET, "/canonical.html", handler_captive_firefox, NULL);
 
 #undef REG
 
-    /* ── WebSocket ALL live data and commands go through here ── */
+    // WebSocket: all live data and commands
     {
         httpd_uri_t ws_uri = {
-            .uri = "/ws",
-            .method = HTTP_GET,
-            .handler = handler_ws,
-            .is_websocket = true,
+            .uri                      = "/ws",
+            .method                   = HTTP_GET,
+            .handler                  = handler_ws,
+            .is_websocket             = true,
             .handle_ws_control_frames = false,
-            .ws_post_handshake_cb = ws_on_connect,
+            .ws_post_handshake_cb     = ws_on_connect,
         };
         esp_err_t ws_err = httpd_register_uri_handler(server, &ws_uri);
         if (ws_err != ESP_OK)
@@ -1926,28 +1599,33 @@ static void start_server(void)
 }
 
 /*!
-    \brief  FreeRTOS task. Pin to Core 0 alongside the WiFi task.
- */
+    \brief  Web task: starts the HTTP server and the captive-portal DNS
+            responder, then sends WebSocket frames to connected clients.
+    \param[in]  pvParameters  Unused.
+*/
 void wt_task_web(void *pvParameters)
 {
-    // wt_log_info("---------- WEB TASK STARTED ----------");
 
-    /* Initialise WebSocket client table and mutex */
-    ws_clients_init();
+    for (int i = 0; i < WS_MAX_CLIENTS; i++)
+        s_ws_fds[i] = -1;
     s_ws_mutex = xSemaphoreCreateMutex();
     if (!s_ws_mutex)
         wt_log_error("Failed to create WS mutex");
 
-    /* Wait for WiFi AP to come up */
+    // Wait for the access point to come up.
     vTaskDelay(pdMS_TO_TICKS(3000));
 
-    mount_spiffs();
     start_server();
 
-    /* ── Captive-portal DNS socket ──
-       SO_RCVTIMEO = WS_DISPLAY_INTERVAL_MS paces the main loop:
-         - a DNS packet arrives → recvfrom returns early → handle query
-         - no packet in 50 ms  → recvfrom returns EAGAIN → do WS work  */
+    // The server is running, so a newly updated firmware is confirmed as
+    // good. If it had crashed before this, the bootloader would roll back.
+    if (s_http_server)
+    {
+        esp_ota_mark_app_valid_cancel_rollback();
+    }
+
+    // Captive-portal DNS socket. Its receive timeout also paces the loop
+    // below: it returns when a query arrives or after one display interval.
     int dns_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (dns_sock >= 0)
     {
@@ -1955,14 +1633,14 @@ void wt_task_web(void *pvParameters)
         setsockopt(dns_sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
         struct timeval tv_dns = {
-            .tv_sec = 0,
+            .tv_sec  = 0,
             .tv_usec = WS_DISPLAY_INTERVAL_MS * 1000,
         };
         setsockopt(dns_sock, SOL_SOCKET, SO_RCVTIMEO, &tv_dns, sizeof(tv_dns));
 
         struct sockaddr_in srv = {
-            .sin_family = AF_INET,
-            .sin_port = htons(CAPTIVE_DNS_PORT),
+            .sin_family      = AF_INET,
+            .sin_port        = htons(CAPTIVE_DNS_PORT),
             .sin_addr.s_addr = htonl(INADDR_ANY),
         };
         if (bind(dns_sock, (struct sockaddr *)&srv, sizeof(srv)) < 0)
@@ -1981,23 +1659,28 @@ void wt_task_web(void *pvParameters)
         wt_log_error("Captive DNS: socket() failed");
     }
 
-    /* ── WS broadcast + DNS main loop ── */
     static char disp_payload[WS_DISPLAY_PAYLOAD];
+    static char disp_sent[WS_DISPLAY_PAYLOAD]; // last display frame sent
     static char full_payload[WS_PAYLOAD_SIZE];
+    int64_t last_disp_us       = 0;
+    uint32_t seen_settings_gen = 0;
+    uint32_t seen_wifi_gen     = 0;
+    uint32_t seen_scan_gen     = 0;
+    static char scan_payload[WS_SCAN_PAYLOAD];
     static uint8_t dns_buf[CAPTIVE_DNS_BUF_SIZE];
-    uint32_t log_seq = 0;
-    uint32_t tick_cnt = 0;
+    uint32_t log_seq   = 0;
+    uint32_t tick_cnt  = 0;
     int64_t last_ws_us = esp_timer_get_time();
 
     for (;;)
     {
-        /* 1. DNS receive blocks at most WS_DISPLAY_INTERVAL_MS */
+        // 1. Answer a DNS query, or wait one display interval.
         if (dns_sock >= 0)
         {
             struct sockaddr_in client;
             socklen_t clen = sizeof(client);
-            int len = recvfrom(dns_sock, dns_buf, sizeof(dns_buf) - 1, 0,
-                               (struct sockaddr *)&client, &clen);
+            int len        = recvfrom(dns_sock, dns_buf, sizeof(dns_buf) - 1, 0,
+                                      (struct sockaddr *)&client, &clen);
             if (len >= 12)
                 dns_handle_query(dns_buf, len, dns_sock, &client, clen);
         }
@@ -2006,14 +1689,13 @@ void wt_task_web(void *pvParameters)
             vTaskDelay(pdMS_TO_TICKS(WS_DISPLAY_INTERVAL_MS));
         }
 
-        /* 2. WS broadcast fire once per WS_DISPLAY_INTERVAL_MS */
+        // 2. Send WebSocket frames, at most once per display interval.
         int64_t now_us = esp_timer_get_time();
         if ((now_us - last_ws_us) < (int64_t)(WS_DISPLAY_INTERVAL_MS * 1000LL))
             continue;
 
         last_ws_us = now_us;
 
-        /* Any WS clients connected? */
         bool any = false;
         if (s_ws_mutex && xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(10)) == pdTRUE)
         {
@@ -2027,27 +1709,57 @@ void wt_task_web(void *pvParameters)
         }
         if (!any)
         {
-            tick_cnt = 0; /* reset so next connect gets a full frame immediately */
+            tick_cnt     = 0;
+            disp_sent[0] = '\0'; // send a display frame as soon as a client connects
             continue;
         }
 
-        tick_cnt++;
-        if (tick_cnt >= WS_FULL_TICKS)
+        // A full frame is sent every WS_FULL_INTERVAL_MS, and immediately when
+        // a client connects or settings or WiFi state change.
+        uint32_t settings_gen = wt_settings_get_generation();
+        uint32_t wifi_gen     = wt_wifi_get_generation();
+        bool state_changed    = (settings_gen != seen_settings_gen) || (wifi_gen != seen_wifi_gen);
+        seen_settings_gen     = settings_gen;
+        seen_wifi_gen         = wifi_gen;
+
+        // Scan frame: sent when a scan starts and when it finishes, and to a
+        // client that connects later.
+        uint32_t scan_gen = wt_wifi_get_scan_generation();
+        if ((scan_gen != seen_scan_gen) || (s_ws_new_client && scan_gen != 0))
         {
-            /* Full-state frame: system + logs every tick; wifi/power/settings
-               only when their generation counters changed (or a client just
-               connected and needs an initial snapshot) see build_ws_payload(). */
-            tick_cnt = 0;
+            build_scan_frame(scan_payload, sizeof(scan_payload));
+            if (ws_broadcast_frame(scan_payload, WS_MAX_QUEUED))
+                seen_scan_gen = scan_gen;
+        }
+
+        tick_cnt++;
+        if (tick_cnt >= WS_FULL_TICKS || s_ws_new_client || state_changed)
+        {
+            // Full frame: system data and logs, plus whatever else changed.
+            tick_cnt         = 0;
             bool force_tier2 = s_ws_new_client;
-            s_ws_new_client = false;
+            s_ws_new_client  = false;
             build_ws_payload(full_payload, sizeof(full_payload), &log_seq, force_tier2);
-            ws_broadcast_frame(full_payload);
+            // If it cannot be queued, a new client still needs the complete
+            // frame next time.
+            if (!ws_broadcast_frame(full_payload, WS_MAX_QUEUED) && force_tier2)
+                s_ws_new_client = true;
         }
         else
         {
-            /* Display-only frame: cheap snapshot, no system/wifi/settings work */
-            build_display_frame(disp_payload, sizeof(disp_payload));
-            ws_broadcast_frame(disp_payload);
+            // Display frame: sent only when the display changed, plus a
+            // keep-alive so the browser knows the connection is alive.
+            wt_segd_snapshot_t snap;
+            format_display_json(disp_payload, sizeof(disp_payload),
+                                wt_segd_snapshot_get(&snap) ? &snap : NULL, true);
+            bool changed   = (strcmp(disp_payload, disp_sent) != 0);
+            bool keepalive = (now_us - last_disp_us) >= (int64_t)(WS_DISPLAY_KEEPALIVE_MS * 1000LL);
+            // Skipped while another frame is waiting: the next one replaces it.
+            if ((changed || keepalive) && ws_broadcast_frame(disp_payload, 1))
+            {
+                strlcpy(disp_sent, disp_payload, sizeof(disp_sent));
+                last_disp_us = now_us;
+            }
         }
     }
 }

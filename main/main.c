@@ -1,17 +1,14 @@
+//=============================================================================
 /*!
-    \file   main.c
-    \brief  WallTick application entry point.
+    \file    main.c
+    \brief   WatchTower entry point.
+*/
+//=============================================================================
 
-    \details
-    Task layout:
-      Core 0:  wt_task_wifi   (WiFi driver + NTP)
-               wt_task_web    (HTTP management server)
-      Core 1:  wt_task_led    (WS2812 render loop)
-               wt_task_sound  (buzzer driver)
-               app_main       (display logic, see below; never returns, so
-                               it doubles as the display-request task
-                               instead of idling once setup is done)
- */
+// Tasks:
+//   Core 0: wt_task_wifi (WiFi, NTP), wt_task_web (web server)
+//   Core 1: wt_task_led (LED render loop), wt_task_sound (buzzer),
+//           app_main (display-request loop; never returns)
 
 #include <stdio.h>
 #include <string.h>
@@ -37,42 +34,30 @@
 #define WT_MAIN_POLL_MS 1000
 
 /*!
-    \brief  Field-by-field wt_segd_request_t comparison.
-
-    A raw memcmp() over the struct is unsafe here: compiler-inserted padding
-    between the mixed-size members (enum, int, char[], uint8_t[], bools) is
-    implementation-defined and can cause spurious or missed change detection.
- */
+    \brief  Compare two display requests field by field. memcmp() is not
+            used because the struct contains padding bytes.
+*/
 static bool segd_request_equal(const wt_segd_request_t *a, const wt_segd_request_t *b)
 {
-    return (a->mode == b->mode) &&
-           (a->value == b->value) &&
+    return (a->mode == b->mode) && (a->value == b->value) &&
            (strncmp(a->text, b->text, sizeof(a->text)) == 0) &&
-           (memcmp(a->raw, b->raw, sizeof(a->raw)) == 0) &&
-           (a->anim_effect == b->anim_effect) &&
-           (a->led_count == b->led_count) &&
-           (a->time_format == b->time_format) &&
-           (a->colon == b->colon) &&
-           (a->colon_blink == b->colon_blink) &&
-           (a->anim == b->anim) &&
-           (a->color_on.red == b->color_on.red) &&
-           (a->color_on.green == b->color_on.green) &&
-           (a->color_on.blue == b->color_on.blue) &&
-           (a->color_off.red == b->color_off.red) &&
-           (a->color_off.green == b->color_off.green) &&
-           (a->color_off.blue == b->color_off.blue) &&
+           (memcmp(a->raw, b->raw, sizeof(a->raw)) == 0) && (a->anim_effect == b->anim_effect) &&
+           (a->led_count == b->led_count) && (a->time_format == b->time_format) &&
+           (a->colon == b->colon) && (a->colon_blink == b->colon_blink) &&
+           (a->color_on.red == b->color_on.red) && (a->color_on.green == b->color_on.green) &&
+           (a->color_on.blue == b->color_on.blue) && (a->color_off.red == b->color_off.red) &&
+           (a->color_off.green == b->color_off.green) && (a->color_off.blue == b->color_off.blue) &&
            (a->intensity == b->intensity);
 }
 
 /*!
-    \brief  Display-request loop. Runs forever on the calling task; called
-            from app_main() once setup is complete rather than as its own
-            task, since app_main never returns and would otherwise just idle.
- */
+    \brief  Build the display request from the current settings and send it
+            to the LED task whenever it changes. Never returns.
+*/
 static void wt_display_request_loop(void)
 {
     wt_segd_request_t last_req = {0};
-    bool has_last_req = false;
+    bool has_last_req          = false;
 
     wt_settings_register_notify_task(xTaskGetCurrentTaskHandle());
 
@@ -81,29 +66,28 @@ static void wt_display_request_loop(void)
         wt_settings_t cfg = wt_settings_get();
 
         wt_segd_request_t req = {
-            .mode = WT_SEGD_MODE_TIME,
-            .value = cfg.display_value,
+            .mode        = WT_SEGD_MODE_TIME,
+            .value       = cfg.display_value,
             .time_format = cfg.time_format,
-            .colon = true,
+            .colon       = true,
             .colon_blink = cfg.colon_blink,
-            .anim = cfg.anim, /* already resolved by wt_settings normalize_settings() */
-            .color_on = cfg.color_on,
-            .color_off = cfg.color_off,
-            .intensity = cfg.intensity,
+            .color_on    = cfg.color_on,
+            .color_off   = cfg.color_off,
+            .intensity   = cfg.intensity,
             .anim_effect = wt_led_anim_effect_from_name(cfg.bg_effect_en ? cfg.anim_effect : NULL),
-            .led_count = cfg.led_count,
+            .led_count   = cfg.led_count,
         };
 
         if (strcmp(cfg.display_mode, "number") == 0)
         {
-            req.mode = WT_SEGD_MODE_NUMBER;
-            req.colon = false;
+            req.mode        = WT_SEGD_MODE_NUMBER;
+            req.colon       = false;
             req.colon_blink = false;
         }
         else if (strcmp(cfg.display_mode, "text") == 0)
         {
-            req.mode = WT_SEGD_MODE_TEXT;
-            req.colon = false;
+            req.mode        = WT_SEGD_MODE_TEXT;
+            req.colon       = false;
             req.colon_blink = false;
             strlcpy(req.text, cfg.display_text, sizeof(req.text));
         }
@@ -116,20 +100,23 @@ static void wt_display_request_loop(void)
         if (wt_segd_queue && (changed || req.mode == WT_SEGD_MODE_TIME))
         {
             xQueueOverwrite(wt_segd_queue, &req);
-            last_req = req;
+            last_req     = req;
             has_last_req = true;
         }
 
-        /* Wake immediately when settings change; WT_MAIN_POLL_MS is only a
-           fallback so the TIME display keeps refreshing between changes. */
+        // Save settings to flash once they have stopped changing.
+        wt_settings_flush_if_due();
+
+        // Wake at once when settings change; otherwise poll so the clock
+        // keeps advancing and a pending save is not left waiting.
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(WT_MAIN_POLL_MS));
     }
 }
 
 /*!
-    \brief  Application entry point, called once by the ESP-IDF startup
-            code after the scheduler starts. Never returns.
- */
+    \brief  Application entry point: initializes the modules, starts the tasks
+            and then runs the display-request loop. Never returns.
+*/
 void app_main(void)
 {
     esp_log_level_set("*", ESP_LOG_NONE);
@@ -140,7 +127,6 @@ void app_main(void)
 
     wt_log_info("========== WATCHTOWER APPLICATION STARTED ==========");
 
-    /* NVS init */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
     {
@@ -149,15 +135,12 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    /* System time init */
     wt_time_init();
 
-    /* Load persistent settings from NVS */
     wt_settings_init();
 
-    /* Create shared queues/sync primitives before any producer/consumer
-       task starts, so a fast producer never races a not-yet-created queue. */
-    wt_segd_queue = xQueueCreate(1, sizeof(wt_segd_request_t));
+    // Queues must exist before the tasks that use them start.
+    wt_segd_queue   = xQueueCreate(1, sizeof(wt_segd_request_t));
     wt_buzzer_queue = xQueueCreate(5, sizeof(wt_sound_event_t));
     wt_segd_snapshot_init();
     if (!wt_segd_queue || !wt_buzzer_queue)
@@ -166,12 +149,10 @@ void app_main(void)
         esp_restart();
     }
 
-    /* ---- Core 0 -------------------------------------------------- */
     BaseType_t task_ok = pdPASS;
     task_ok &= xTaskCreatePinnedToCore(wt_task_wifi, "WT_WIFI", 8192, NULL, 4, NULL, 0);
     task_ok &= xTaskCreatePinnedToCore(wt_task_web, "WT_WEB", 16384, NULL, 3, NULL, 0);
 
-    /* ---- Core 1 -------------------------------------------------- */
     task_ok &= xTaskCreatePinnedToCore(wt_task_led, "WT_LED", 16384, NULL, 5, NULL, 1);
     task_ok &= xTaskCreatePinnedToCore(wt_task_sound, "WT_SOUND", 4096, NULL, 4, NULL, 1);
 
@@ -181,9 +162,7 @@ void app_main(void)
         esp_restart();
     }
 
-    /* app_main's own task never returns, so it runs the display-request loop
-       directly instead of spawning a 5th task purely to idle. Its stack size,
-       core affinity, and priority are set via sdkconfig (CONFIG_ESP_MAIN_TASK_*)
-       to match what the dedicated WT_MAIN task used: core 1, priority 4. */
+    // The main task runs the display-request loop itself instead of idling.
+    // Its stack, core and priority come from CONFIG_ESP_MAIN_TASK_*.
     wt_display_request_loop();
 }

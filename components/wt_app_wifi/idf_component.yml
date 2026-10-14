@@ -1,0 +1,2 @@
+dependencies:
+    espressif/mdns: '*' # wt_app_wifi advertises the device as <hostname>.local

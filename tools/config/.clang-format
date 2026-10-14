@@ -1,0 +1,31 @@
+# Formatting rules for docs/CODING_STANDARD.md section 8.
+# Apply with: tools/format.sh
+BasedOnStyle: LLVM
+
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+
+BreakBeforeBraces: Allman
+IndentCaseLabels: true
+PointerAlignment: Right
+SpaceAfterCStyleCast: false
+
+AllowShortBlocksOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+
+AlignConsecutiveMacros: Consecutive
+AlignConsecutiveAssignments: Consecutive
+AlignTrailingComments: true
+AlignAfterOpenBracket: Align
+AlignOperands: Align
+BreakBeforeBinaryOperators: None
+
+# Own header first, then project, then system headers: keep the written order.
+SortIncludes: Never
+MaxEmptyLinesToKeep: 1

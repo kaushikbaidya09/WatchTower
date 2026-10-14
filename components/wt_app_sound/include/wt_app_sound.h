@@ -1,9 +1,9 @@
+//=============================================================================
 /*!
-    \file   wt_app_sound.h
-    \brief  Buzzer sound-event API.
-
-    \details
- */
+    \file    wt_app_sound.h
+    \brief   Buzzer sounds.
+*/
+//=============================================================================
 
 #ifndef WT_APP_SOUND_H
 #define WT_APP_SOUND_H
@@ -30,4 +30,4 @@ void wt_task_sound(void *pvParameter);
 
 extern QueueHandle_t wt_buzzer_queue;
 
-#endif // WT_APP_SOUND_H
+#endif /* WT_APP_SOUND_H */

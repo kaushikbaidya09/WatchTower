@@ -1,9 +1,9 @@
+//=============================================================================
 /*!
-    \file   wt_app_time.h
-    \brief  DS3231 RTC driver over I2C.
-
-    \details
- */
+    \file    wt_app_time.h
+    \brief   DS3231 real-time clock over I2C.
+*/
+//=============================================================================
 
 #ifndef WT_APP_TIME_H
 #define WT_APP_TIME_H
@@ -14,7 +14,8 @@
 
 #define WT_RTC_I2C_ADDR 0x68
 
-typedef struct {
+typedef struct
+{
     int sec;
     int min;
     int hour;
@@ -28,4 +29,4 @@ void wt_time_init(void);
 bool wt_time_get_time(wt_time_t *time);
 void wt_time_set_time(const wt_time_t *time);
 
-#endif // WT_APP_TIME_H
+#endif /* WT_APP_TIME_H */

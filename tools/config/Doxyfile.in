@@ -1,0 +1,28 @@
+# Minimal Doxygen configuration template. CMake fills in the @VAR@ values and
+# writes the result to the build directory. Run it with the CMake `docs` target.
+PROJECT_NAME           = "@PROJECT_NAME@"
+PROJECT_NUMBER         = @FW_VERSION@
+PROJECT_BRIEF          = "@PROJECT_DESCRIPTION@"
+OUTPUT_DIRECTORY       = @CMAKE_BINARY_DIR@/docs
+INPUT                  = @SRCDIR@ \
+                         @CMAKE_SOURCE_DIR@/docs/CODING_STANDARD.md \
+                         @CMAKE_SOURCE_DIR@/README.md
+STRIP_FROM_PATH        = @CMAKE_SOURCE_DIR@
+FILE_PATTERNS          = *.c *.h *.md
+RECURSIVE              = YES
+USE_MDFILE_AS_MAINPAGE = @CMAKE_SOURCE_DIR@/README.md
+OPTIMIZE_OUTPUT_FOR_C  = YES
+
+# Hide compiler extensions that Doxygen would otherwise read as declarations.
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = YES
+PREDEFINED             = "__attribute__(x)=" "asm(x)="
+EXTRACT_ALL            = NO
+EXTRACT_STATIC         = YES
+EXTRACT_PRIVATE        = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_NO_PARAMDOC       = NO
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+SOURCE_BROWSER         = YES
+HAVE_DOT               = NO

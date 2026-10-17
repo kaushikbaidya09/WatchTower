@@ -1,0 +1,4 @@
+# Overrides sdkconfig.defaults for the ESP32-S3 board with 16 MB flash.
+# tools/run.sh --board s3-16mb layers this file on top of sdkconfig.defaults.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions/partitions-esp32-s3-16mb.csv"

@@ -22,18 +22,21 @@ tools/run.sh --flash            # flash firmware and web console to the board
 tools/run.sh --monitor          # serial monitor (exit with Ctrl+])
 tools/run.sh --all              # clean, build from scratch, flash, monitor
 tools/run.sh --flash --port /dev/ttyUSB0   # another serial port (default /dev/ttyACM0)
+tools/run.sh --all --board s3-8mb       # board: s3-16mb or s3-8mb (asked for if left out)
 
 tools/format.sh                 # format C files and web/ (--check to only report)
-cmake --build build --target check   # cppcheck static analysis, fails on any finding
-cmake --build build --target docs    # Doxygen HTML → build/docs/html/index.html
+cmake --build build/s3-16mb --target check   # cppcheck static analysis, fails on any finding
+cmake --build build/s3-16mb --target docs    # Doxygen HTML → build/s3-16mb/docs/html/index.html
 ```
 
 The same without the script:
 
 ```bash
-idf.py -G "Unix Makefiles" build     # first build: configure for GNU Make
-idf.py build                         # later builds reuse that generator
-idf.py -p <PORT> flash monitor
+# first build: configure for GNU Make and the board (s3-16mb shown)
+idf.py -G "Unix Makefiles" -B build/s3-16mb -D SDKCONFIG=sdkconfig.s3-16mb \
+       -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.s3-16mb" build
+idf.py -B build/s3-16mb build                    # later builds reuse those settings
+idf.py -B build/s3-16mb -p <PORT> flash monitor
 ```
 
 The build uses GNU Make, not Ninja: a build directory configured for Ninja is
@@ -76,10 +79,11 @@ tools/                  run.sh (build/flash/monitor), format.sh, gzip_web.py
 simulation/
   mock_device/          Mock device server for working on the web console
   wokwi/                Wokwi simulator project
-partitions/             Partition table (dual OTA; the 6 MB littlefs partition is unused)
+partitions/             Partition tables, one per board (dual OTA; the littlefs partition is unused)
 docs/                   Design, getting started, coding standard
 WatchTower.code-workspace  VS Code workspace: shared editor settings (open this file)
 sdkconfig.defaults      The ESP-IDF options this firmware needs
+sdkconfig.defaults.*    Per-board overrides: flash size and partition table
 version.txt             Firmware version (Semantic Versioning), read by the build
 ```
 

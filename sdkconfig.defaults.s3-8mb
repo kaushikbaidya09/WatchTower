@@ -1,0 +1,4 @@
+# Overrides sdkconfig.defaults for the ESP32-S3 (QFN56) board with 8 MB flash.
+# tools/run.sh --board s3-8mb layers this file on top of sdkconfig.defaults.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions/partitions-esp32-s3-8mb.csv"

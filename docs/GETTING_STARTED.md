@@ -32,7 +32,7 @@ git clone <repository-url>
 cd WatchTower
 ```
 
-The rest of this document assumes your shell is at the project root, i.e. the directory containing `CMakeLists.txt`, `main/`, `components/`, `web/`, and `sdkconfig`.
+The rest of this document assumes your shell is at the project root, i.e. the directory containing `CMakeLists.txt`, `main/`, `components/`, `web/`, and `sdkconfig.defaults`.
 
 ### 3.1 Opening in VS Code
 
@@ -64,30 +64,33 @@ tools/run.sh --all        # clean, build from scratch, flash, monitor
 ```
 
 - The steps can be combined (`--build --flash --monitor`) and always run in the order clean, build, flash, monitor.
-- `--clean` deletes `build/`, `managed_components/` (downloaded again on the next build, which needs a network connection) and `.cache/`. `sdkconfig` is kept.
+- `--board` picks the board, and the script asks when it is left out: `s3-16mb` (ESP32-S3, 16 MB flash) or `s3-8mb` (ESP32-S3 QFN56, 8 MB flash). Each board builds in `build/<board>/` with `sdkconfig.<board>`, made from `sdkconfig.defaults` plus `sdkconfig.defaults.<board>`, and uses `partitions/partitions-esp32-s3-<16mb|8mb>.csv`.
+- `--clean` deletes the board's `build/<board>/`, `managed_components/` (downloaded again on the next build, which needs a network connection) and `.cache/`. `sdkconfig.<board>` is kept.
 - `--port <PORT>` selects the serial port (default `/dev/ttyACM0`).
 
-Build output (including the `.elf` and `flasher_args.json` that the Wokwi config in Section 5 expects) lands in `build/`.
+Build output (including the `.elf` and `flasher_args.json` that the Wokwi config in Section 5 expects) lands in `build/<board>/`; the Wokwi config and the VS Code workspace use `build/s3-16mb/`.
 
 ### 4.3 Using idf.py directly (any OS)
 
 Equivalent manual steps, from the project root, after loading your ESP-IDF environment:
 
 ```bash
-idf.py -G "Unix Makefiles" build   # first build: configure for GNU Make
-idf.py build                       # later builds reuse that generator
+# first build: configure for GNU Make and the board (s3-16mb shown; s3-8mb works the same)
+idf.py -G "Unix Makefiles" -B build/s3-16mb -D SDKCONFIG=sdkconfig.s3-16mb \
+       -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.s3-16mb" build
+idf.py -B build/s3-16mb build      # later builds reuse those settings
 ```
 
-The project is built with GNU Make. `idf.py` picks Ninja by default when it is installed, so the first configuration of a build directory needs `-G "Unix Makefiles"`; a directory configured for Ninja is refused with a message saying how to switch. `sdkconfig` and `sdkconfig.defaults` already select the `esp32s3` target and this project's partition table.
+The project is built with GNU Make. `idf.py` picks Ninja by default when it is installed, so the first configuration of a build directory needs `-G "Unix Makefiles"`; a directory configured for Ninja is refused with a message saying how to switch. `sdkconfig.defaults` selects the `esp32s3` target; `sdkconfig.defaults.<board>` selects the board's flash size and partition table. Both are only read when `sdkconfig.<board>` does not exist yet.
 
-Every build first runs `tools/format.sh` over the sources. Static analysis and the API documentation are separate targets: `cmake --build build --target check` and `cmake --build build --target docs`.
+Every build first runs `tools/format.sh` over the sources. Static analysis and the API documentation are separate targets: `cmake --build build/s3-16mb --target check` and `cmake --build build/s3-16mb --target docs`.
 
 ### 4.4 Flashing and Monitoring
 
 With the board connected over USB:
 
 ```bash
-idf.py -p <PORT> flash monitor
+idf.py -B build/s3-16mb -p <PORT> flash monitor
 ```
 
 Replace `<PORT>` with the board's serial device (e.g. `/dev/ttyUSB0` or `/dev/ttyACM0` on Linux, `COMx` on Windows). `flash` writes the built factory-slot image; `monitor` attaches to the serial console (exit with `Ctrl+]`). The web console (`web/`) is gzip-compressed and built into the firmware image, so there is no separate file system image to flash.
@@ -99,11 +102,11 @@ Once flashed, later updates can be installed over the air; see Section 6.
 The `simulation/wokwi/` directory holds a ready-made Wokwi project:
 
 - `diagram.json`: the simulated hardware (an ESP32-S3 DevKitC-1 board plus WS2812 LED strips wired to represent the display).
-- `wokwi.toml`: points the simulator at `../../build/flasher_args.json` and `../../build/WatchTower.elf`, i.e. the output of Section 4 — **build the firmware first**, the simulator loads the same binary you would flash to real hardware.
+- `wokwi.toml`: points the simulator at `../../build/s3-16mb/flasher_args.json` and `../../build/s3-16mb/WatchTower.elf`, i.e. the output of Section 4 — **build the firmware first**, the simulator loads the same binary you would flash to real hardware.
 
 To run it:
 
-1. Build the firmware (Section 4) so `build/WatchTower.elf` and `build/flasher_args.json` exist.
+1. Build the firmware (Section 4) for `s3-16mb` so `build/s3-16mb/WatchTower.elf` and `build/s3-16mb/flasher_args.json` exist.
 2. Open the project in VS Code with the "Wokwi for VS Code" extension installed, and start a simulation from `simulation/wokwi/wokwi.toml` (or use `wokwi-cli` pointed at that same directory, if you use the CLI instead of the VS Code extension).
 
 Note: the on-device web console still needs real WiFi connectivity to be reachable from a browser; if your simulation setup does not provide that, use the standalone mock server in Section 6 instead to work on the web console itself.
@@ -127,7 +130,7 @@ Keep in mind the mock server hand-duplicates the firmware's JSON field names rat
 3. **Find it on your network:** once joined, the console is at `http://watchtower.local` (mDNS), so the address your router assigned does not need to be known. The name can be changed in the WiFi section. If the name does not resolve (some networks block mDNS), use the IP address shown in the console or on the serial monitor.
 4. **Change the access point password:** also in the WiFi section. Devices on the access point have to rejoin with the new one.
 5. **Configure the clock:** the Display/Clock/Power panels cover color, brightness, animation, display mode (time/number/text), colour effect, timezone/NTP server, alarms, and power-saving options. Changes are sent live over the WebSocket and persisted to NVS.
-6. **OTA updates:** in System → Update, install `build/WatchTower.bin` (`POST /api/ota`). It carries the web console too, so firmware and console update together. The image lands in the next OTA slot and the device reboots into it; if the new image resets before its web server comes up, the bootloader rolls back to the previous one (this needs a bootloader built with rollback, i.e. one USB flash of this version). OTA uploads are rejected when the client is on the device's own AP subnet.
+6. **OTA updates:** in System → Update, install `build/<board>/WatchTower.bin` (`POST /api/ota`). It carries the web console too, so firmware and console update together. The image lands in the next OTA slot and the device reboots into it; if the new image resets before its web server comes up, the bootloader rolls back to the previous one (this needs a bootloader built with rollback, i.e. one USB flash of this version). OTA uploads are rejected when the client is on the device's own AP subnet.
 
 ## 8. Where to Go Next
 

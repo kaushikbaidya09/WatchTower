@@ -5,9 +5,9 @@
 # Built with GNU Make, not Ninja. The first build selects it, later builds
 # reuse it:  idf.py -G "Unix Makefiles" build   (tools/run.sh does this)
 #
-#   cmake --build build --target check    cppcheck, fails on any finding
-#   cmake --build build --target format   clang-format + Prettier (runs before builds)
-#   cmake --build build --target docs     Doxygen HTML in build/docs/html
+#   cmake --build build/s3-16mb --target check  cppcheck, fails on any finding
+#   cmake --build build/s3-16mb --target format clang-format + Prettier (runs before builds)
+#   cmake --build build/s3-16mb --target docs   Doxygen HTML in build/s3-16mb/docs/html
 #==============================================================================
 
 cmake_minimum_required(VERSION 3.16)

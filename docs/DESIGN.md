@@ -41,7 +41,7 @@ Out of scope: PCB/schematic design, enclosure design, and manufacturing test pro
 
 - ESP-IDF documentation (RMT driver, esp_http_server, esp_wifi, NVS, temperature sensor).
 - Source tree at `/home/kaushik/workspace/Templates/PWP` (this repository).
-- `sdkconfig` and `partitions/partitions-esp32-s3.csv` for the authoritative build/partition configuration.
+- `sdkconfig.s3-16mb` / `sdkconfig.s3-8mb` and `partitions/partitions-esp32-s3-16mb.csv` / `partitions/partitions-esp32-s3-8mb.csv` for the authoritative build/partition configuration of each board.
 
 ## 2. System Overview
 
@@ -53,7 +53,7 @@ The device operates in combined AP+STA WiFi mode: it always exposes its own acce
 
 ### 3.1 Hardware Overview
 
-- MCU: ESP32-S3 (Xtensa, per `sdkconfig` `CONFIG_IDF_TARGET_ESP32S3`).
+- MCU: ESP32-S3 (Xtensa, per `sdkconfig.defaults` `CONFIG_IDF_TARGET`).
 - Display: 58x WS2812 addressable LEDs on GPIO 14, driven via the RMT peripheral (`components/wt_app_led`).
 - RTC: DS3231 over I2C (`components/wt_app_time`), address `0x68`.
 - Buzzer: piezo driven via LEDC PWM on GPIO 11 (`components/wt_app_sound`).
@@ -61,7 +61,7 @@ The device operates in combined AP+STA WiFi mode: it always exposes its own acce
 
 ### 3.2 Flash Partition Layout
 
-From `partitions/partitions-esp32-s3.csv`:
+From `partitions/partitions-esp32-s3-16mb.csv` (16 MB board; `partitions-esp32-s3-8mb.csv` is the same except `littlefs`):
 
 | Partition | Type | Size | Purpose |
 |---|---|---|---|
@@ -70,7 +70,7 @@ From `partitions/partitions-esp32-s3.csv`:
 | `phy_init` | data/phy | 0x1000 | RF calibration data |
 | `factory` | app | 2M | Factory firmware slot |
 | `ota_0` / `ota_1` | app | 2M each | OTA update slots (dual-bank OTA) |
-| `littlefs` | data/littlefs | 6M | Unused. It held the web console until the console was built into the firmware; kept so existing devices keep their partition table. |
+| `littlefs` | data/littlefs | 6M (1920K on the 8 MB board) | Unused. It held the web console until the console was built into the firmware; kept so existing devices keep their partition table. |
 
 OTA updates go through `POST /api/ota` (Section 6.1) into the next OTA slot. The web console is part of the image, so one upload updates both, and a rollback restores the matching console too.
 
@@ -86,7 +86,7 @@ Defined in `main/main.c` and created in `app_main()`:
 | WT_SOUND | 1 | 4 | `wt_task_sound` | `wt_app_sound` |
 | (main task) | 1 | 4 (`CONFIG_ESP_MAIN_TASK_*`) | `wt_display_request_loop` (called from `app_main`, never returns) | `main.c` |
 
-`app_main()` never returns: after creating the four dedicated tasks it runs the display-request loop directly on the ESP-IDF main task rather than spawning a fifth task purely to idle, so the main task's own stack size/affinity/priority (set via `sdkconfig`) double as that loop's resource budget.
+`app_main()` never returns: after creating the four dedicated tasks it runs the display-request loop directly on the ESP-IDF main task rather than spawning a fifth task purely to idle, so the main task's own stack size/affinity/priority (set via `sdkconfig.defaults`) double as that loop's resource budget.
 
 ### 3.4 Component Dependency Graph
 

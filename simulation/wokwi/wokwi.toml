@@ -1,7 +1,7 @@
 [wokwi]
 version = 1
-firmware = '../../build/flasher_args.json'
-elf = '../../build/WatchTower.elf'
+firmware = '../../build/s3-16mb/flasher_args.json'
+elf = '../../build/s3-16mb/WatchTower.elf'
 gdbServerPort=3333
 
 [[net.forward]]

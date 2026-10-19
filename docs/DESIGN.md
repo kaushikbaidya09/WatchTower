@@ -208,7 +208,7 @@ File: `main/main.c`.
 |---|---|---|
 | GET | `/` | Web console page (`index.html`, gzip, from the firmware image) |
 | GET | `/style.css`, `/app.js` | Stylesheet and script, served like `/`. |
-| POST | `/api/ota` | Upload a firmware image (which includes the web console). Rejected from the AP subnet (no other auth). |
+| POST | `/api/ota` | Upload a firmware image (which includes the web console). Accepted over the access point and the home network; no authentication beyond joining the network. |
 | GET | various | Captive-portal probe responses (OS-specific; see Section 4.2) |
 | GET | `/ws` | WebSocket upgrade (Section 6.2) |
 

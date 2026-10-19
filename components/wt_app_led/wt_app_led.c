@@ -23,13 +23,14 @@
 #include "esp_err.h"
 #include "driver/rmt_tx.h"
 
-#define RMT_RESOLUTION_HZ     10000000 ///< RMT clock 10 MHz → 1 tick = 0.1 µs
-#define RMT_GPIO_NUM          14       ///< GPIO pin connected to strip data-in
-#define FRAME_MS              20       ///< Render period in ms (50 fps)
-#define RMT_WAIT_TIMEOUT_MS   100      ///< Longest wait for a frame to finish sending
-#define COLON_BLINK_FRAMES    25       ///< Half-period in frames for colon blink (500 ms)
-#define INTENSITY_SLEW_STEP   4        ///< Max brightness delta applied per frame
-#define RMT_WARN_EVERY_FRAMES 250 ///< Log a persisting RMT fault once per this many frames (5 s)
+#define RMT_RESOLUTION_HZ      10000000 ///< RMT clock 10 MHz → 1 tick = 0.1 µs
+#define RMT_GPIO_NUM           14       ///< GPIO pin connected to strip data-in
+#define RMT_DMA_BUFFER_SYMBOLS 2046     ///< DMA buffer, the largest the driver accepts (8 KB)
+#define FRAME_MS               20       ///< Render period in ms (50 fps)
+#define RMT_WAIT_TIMEOUT_MS    100      ///< Longest wait for a frame to finish sending
+#define COLON_BLINK_FRAMES     25       ///< Half-period in frames for colon blink (500 ms)
+#define INTENSITY_SLEW_STEP    4        ///< Max brightness delta applied per frame
+#define RMT_WARN_EVERY_FRAMES  250 ///< Log a persisting RMT fault once per this many frames (5 s)
 
 QueueHandle_t wt_segd_queue = NULL; ///< Display requests for the LED task
 static uint8_t s_pixels[WT_SEGD_MAX_TOTAL_LEDS *
@@ -693,15 +694,27 @@ void wt_task_led(void *pvParameter)
         return;
     }
 
+    // DMA with a large buffer: a 58-LED frame (1393 symbols) is encoded in
+    // full before it is sent. Without DMA the 96-symbol RMT memory needs a
+    // refill interrupt every ~29 µs; when WiFi delays one, the line idles
+    // long enough to latch the strip mid-frame and the remaining bits land
+    // on the wrong LEDs, which shows up as flicker.
     rmt_channel_handle_t led_chan  = NULL;
     rmt_tx_channel_config_t tx_cfg = {
         .clk_src           = RMT_CLK_SRC_DEFAULT,
         .gpio_num          = RMT_GPIO_NUM,
-        .mem_block_symbols = 64,
+        .mem_block_symbols = RMT_DMA_BUFFER_SYMBOLS,
         .resolution_hz     = RMT_RESOLUTION_HZ,
         .trans_queue_depth = 4,
+        .flags.with_dma    = true,
     };
-    ESP_ERROR_CHECK(rmt_new_tx_channel(&tx_cfg, &led_chan));
+    if (rmt_new_tx_channel(&tx_cfg, &led_chan) != ESP_OK)
+    {
+        wt_log_warn("RMT DMA unavailable, LEDs may flicker under WiFi load");
+        tx_cfg.mem_block_symbols = 64;
+        tx_cfg.flags.with_dma    = false;
+        ESP_ERROR_CHECK(rmt_new_tx_channel(&tx_cfg, &led_chan));
+    }
 
     rmt_encoder_handle_t rtm_encoder_h  = NULL;
     rmt_simple_encoder_config_t enc_cfg = {.callback = encoder_callback};

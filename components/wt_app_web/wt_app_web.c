@@ -596,31 +596,11 @@ static esp_err_t handler_web_file(httpd_req_t *req)
 /*!
     \brief  POST /api/ota: firmware update. The image (which also carries the
             web console) is written to the next update partition, made the
-            boot partition, and the device restarts. Refused from clients on
-            the access point (192.168.4.x).
+            boot partition, and the device restarts. Accepted over both the
+            access point and the home network.
 */
 static esp_err_t handler_ota(httpd_req_t *req)
 {
-    // The server socket is IPv6-capable, so an IPv4 client is reported as an
-    // IPv4-mapped IPv6 address (::ffff:a.b.c.d). An address that cannot be
-    // read is treated as coming from the access point.
-    struct sockaddr_storage addr;
-    socklen_t addr_len   = sizeof(addr);
-    int fd               = httpd_req_to_sockfd(req);
-    const uint8_t *octet = NULL;
-    if (fd >= 0 && getpeername(fd, (struct sockaddr *)&addr, &addr_len) == 0)
-    {
-        if (addr.ss_family == AF_INET)
-            octet = (const uint8_t *)&((const struct sockaddr_in *)&addr)->sin_addr.s_addr;
-        else if (addr.ss_family == AF_INET6)
-            octet = &((const struct sockaddr_in6 *)&addr)->sin6_addr.s6_addr[12];
-    }
-    if (!octet || (octet[0] == 192 && octet[1] == 168 && octet[2] == 4))
-    {
-        wt_log_warn("OTA rejected: request from AP interface");
-        resp_error(req, "unauthorized");
-        return ESP_OK;
-    }
     wt_log_info("OTA: %d bytes incoming", req->content_len);
 
     const esp_partition_t *update_part = esp_ota_get_next_update_partition(NULL);
